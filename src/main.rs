@@ -4,9 +4,13 @@ mod cli;
 mod database;
 mod embeddings;
 mod llm;
+mod proxy_config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+	// Initialize proxy settings
+	proxy_config::init_proxy();
+
 	let args = cli::Cli::parse();
 	match args.command {
 		cli::Commands::Ask { query } => {

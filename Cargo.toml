@@ -30,3 +30,4 @@ rand = "0.8.5"
 tempfile = "3.8.0"
 dirs = "5.0.1"
 prettytable-rs = "0.10.0"
+ureq = { version = "2.12.1", features = ["proxy-from-env"] }
