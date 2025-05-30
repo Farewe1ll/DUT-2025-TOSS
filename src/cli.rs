@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
-#[command(name = "Chacha")]
-#[command(about = "Chacha is AI assistant which is tailored just for you", long_about = None)]
+#[command(name = "Mangosteen")]
+#[command(about = "Mangosteen is AI assistant which is tailored just for you", long_about = None)]
 pub struct Cli {
 	#[command(subcommand)]
 	pub command: Commands,
@@ -14,7 +14,7 @@ pub enum Commands {
 	/// The question to ask
 		query: String,
 	},
-	/// Tell Chacha something to remember
+	/// Tell Mangosteen something to remember
 	Remember {
 	/// The content to remember
 		content: String,
