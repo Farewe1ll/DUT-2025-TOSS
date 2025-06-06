@@ -13,7 +13,7 @@ use config::Config;
 use cookie_manager::CookieManager;
 use http_client::{HttpClient, HttpRequestBuilder};
 use logger::RequestLogger;
-use network::{HttpParser, PacketCapture};
+use network::{HttpParser, PacketMonitor};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -37,8 +37,8 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Commands::Capture { interface, filter, replay } => {
-            start_capture(interface, filter, replay, cookie_manager.clone(), http_client.clone(), logger.clone()).await?;
+        Commands::Monitor { interface, filter, replay } => {
+            start_monitor(interface, filter, replay, cookie_manager.clone(), http_client.clone(), logger.clone()).await?;
         }
 
         Commands::Request { method, url, headers, body, timeout } => {
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn start_capture(
+async fn start_monitor(
     interface: String,
     filter: String,
     replay: bool,
@@ -82,89 +82,223 @@ async fn start_capture(
     http_client: Arc<HttpClient>,
     logger: Arc<RequestLogger>,
 ) -> Result<()> {
-    info!("Starting network capture on {} with filter: {}", interface, filter);
+    info!("Starting network monitor on {} with filter: {}", interface, filter);
 
     let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
-    let capture = PacketCapture::new(interface, filter, packet_tx);
+    let monitor = Arc::new(PacketMonitor::new(interface, filter, packet_tx));
 
-    // Start packet capture
-    capture.start_capture().await?;
+    // Start packet monitor and get the task handle
+    let monitor_handle = monitor.start_monitor().await?;
 
-    println!("Packet capture started. Press Ctrl+C to stop.");
+    println!("Packet monitor started.");
+    println!("Ctrl + C then 'q' and Enter to quit");
+    // println!("🎮 Press 'q' + Enter to quit");
 
-    // Setup signal handler
+    // Setup unified signal handler
     let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
+    let monitor_for_signal = monitor.clone();
+    let monitor_for_keyboard = monitor.clone();
+    let monitor_for_unix = monitor.clone();
+    let shutdown_tx_clone = shutdown_tx.clone();
+    let shutdown_tx_keyboard = shutdown_tx.clone();
 
+    // Keyboard input handler for user-friendly quit
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let stdin = tokio::io::stdin();
+        let reader = BufReader::new(stdin);
+        let mut lines = reader.lines();
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let input = line.trim().to_lowercase();
+                    if input == "q" || input == "quit" || input == "exit" {
+                        info!("User requested quit via keyboard input");
+                        monitor_for_keyboard.shutdown();
+                        monitor_for_keyboard.release_sender();
+                        let _ = shutdown_tx_keyboard.send(());
+                        break;
+                    } else if !input.is_empty() {
+                        println!("Unknown command '{}'. Press Ctrl + C then q and Enter to quit.", input);
+                    }
+                }
+                Ok(None) => {
+                    info!("Stdin closed, shutting down...");
+                    monitor_for_keyboard.shutdown();
+                    monitor_for_keyboard.release_sender();
+                    let _ = shutdown_tx_keyboard.send(());
+                    break;
+                }
+                Err(e) => {
+                    error!("Error reading from stdin: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    // Signal handler for Ctrl+C
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                info!("Ctrl+C received, shutting down");
+                monitor_for_signal.shutdown();
+                monitor_for_signal.release_sender();
+                let _ = shutdown_tx.send(());
+
+                // Give main loop time to shutdown gracefully
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                std::process::exit(0);
+            }
+            Err(err) => {
+                error!("Unable to listen for Ctrl+C signal: {}", err);
+            }
+        }
+    });
+
+    // Unix signal handler for SIGTERM/SIGINT
     #[cfg(unix)]
     {
-        use tokio::signal;
         tokio::spawn(async move {
-            let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
-            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+            use tokio::signal::unix::{signal, SignalKind};
+
+            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
 
             tokio::select! {
                 _ = sigint.recv() => {
-                    info!("Received SIGINT");
+                    info!("SIGINT received, shutting down");
+                    monitor_for_unix.shutdown();
+                    monitor_for_unix.release_sender();
+                    let _ = shutdown_tx_clone.send(());
+
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    std::process::exit(0);
                 }
                 _ = sigterm.recv() => {
-                    info!("Received SIGTERM");
+                    info!("SIGTERM received, shutting down");
+                    monitor_for_unix.shutdown();
+                    monitor_for_unix.release_sender();
+                    let _ = shutdown_tx_clone.send(());
+
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    std::process::exit(0);
                 }
             }
-
-            let _ = shutdown_tx.send(());
         });
     }
 
     let mut packet_count = 0;
+    let mut exit_reason = "unknown";
 
-    // Process captured packets
+    // Process monitord packets
     loop {
-        tokio::select! {
-            packet = packet_rx.recv() => {
-                match packet {
-                    Some(packet) => {
-                        packet_count += 1;
+        // Check for shutdown signal first
+        match shutdown_rx.try_recv() {
+            Ok(_) => {
+                info!("Shutdown signal received, stopping monitor");
+                exit_reason = "shutdown_signal";
+                break;
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                info!("Shutdown channel closed");
+                exit_reason = "shutdown_channel_closed";
+                break;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {
+                // No shutdown signal, continue processing
+            }
+        }
 
-                        if let Some(http_request) = HttpParser::parse_http_request(&packet) {
-                            info!("Captured HTTP request #{}: {} {}", packet_count, http_request.method, http_request.url);
+        // Check if monitor task is finished
+        if monitor_handle.is_finished() {
+            info!("Monitor task completed");
+            exit_reason = "monitor_task_finished";
+            break;
+        }
 
-                            // Log the captured request
-                            if let Err(e) = logger.log_request(&http_request, "captured").await {
-                                error!("Failed to log request: {}", e);
-                            }
+        // Process packets in batches
+        let mut batch_processed = 0;
+        const MAX_BATCH_SIZE: usize = 10;
+        let mut channel_closed = false;
 
-                            // Replay request if enabled
-                            if replay {
-                                match http_client.replay_request(&http_request).await {
-                                    Ok(response) => {
-                                        info!("Replay response: {} - {}", response.status, response.final_url);
+        while batch_processed < MAX_BATCH_SIZE {
+            match packet_rx.try_recv() {
+                Ok(packet) => {
+                    packet_count += 1;
+                    batch_processed += 1;
 
-                                        // Log the replayed request with response
-                                        if let Err(e) = logger.log_request_response(&http_request, &response, "replay").await {
-                                            error!("Failed to log replay response: {}", e);
-                                        }
+                    if let Some(http_request) = HttpParser::parse_http_request(&packet) {
+                        info!("Monitored HTTP request #{}: {} {}", packet_count, http_request.method, http_request.url);
+
+                        // Log the monitored request
+                        if let Err(e) = logger.log_request(&http_request, "monitored").await {
+                            error!("Failed to log request: {}", e);
+                        }
+
+                        // Replay request if enabled
+                        if replay {
+                            match http_client.replay_request(&http_request).await {
+                                Ok(response) => {
+                                    info!("Replay response: {} - {}", response.status, response.final_url);
+
+                                    // Log the replayed request with response
+                                    if let Err(e) = logger.log_request_response(&http_request, &response, "replay").await {
+                                        error!("Failed to log replay response: {}", e);
                                     }
-                                    Err(e) => {
-                                        error!("Failed to replay request: {}", e);
-                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to replay request: {}", e);
                                 }
                             }
                         }
                     }
-                    None => {
-                        info!("Packet channel closed");
-                        break;
-                    }
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // No more packets, exit batch loop
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    info!("Packet channel closed - monitor finished");
+                    channel_closed = true;
+                    exit_reason = "packet_channel_closed";
+                    break;
                 }
             }
-            _ = shutdown_rx.recv() => {
-                info!("Shutdown signal received, stopping capture");
-                break;
-            }
+        }
+
+        // If packet channel closed, exit main loop immediately
+        if channel_closed {
+            break;
+        }
+
+        // if batch_processed > 0 {
+        //     info!("Processed {} packets in batch, total: {}", batch_processed, packet_count);
+        // }
+
+        // Brief sleep to allow other tasks to run
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    info!("Main processing loop ended (reason: {})", exit_reason);
+
+    // Wait for the monitor task to complete
+    if !monitor_handle.is_finished() {
+        info!("Waiting for packet monitor task to finish...");
+        if let Err(e) = monitor_handle.await {
+            error!("Error waiting for monitor task: {}", e);
         }
     }
 
-    info!("Captured {} packets total", packet_count);
+    info!("Monitord {} packets total", packet_count);
+
+    // Ensure proper exit for signal-triggered shutdown
+    if exit_reason == "shutdown_signal" {
+        std::process::exit(0);
+    }
+
     Ok(())
 }
 
@@ -282,8 +416,8 @@ async fn show_logs(
         let stats = logger.get_request_stats().await?;
         println!("=== Request Statistics ===");
         println!("Total Requests: {}", stats.total_requests);
-        println!("Captured: {}, Manual: {}, Replay: {}",
-                 stats.captured_requests, stats.manual_requests, stats.replay_requests);
+        println!("Monitored: {}, Manual: {}, Replay: {}",
+                 stats.monitord_requests, stats.manual_requests, stats.replay_requests);
         println!("Successful: {}, Failed: {}", stats.successful_requests, stats.failed_requests);
         println!("Average Response Time: {}ms", stats.average_response_time);
 

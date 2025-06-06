@@ -11,7 +11,7 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub interface: String,
-    pub capture_filter: String,
+    pub monitor_filter: String,
     pub buffer_size: usize,
 }
 
@@ -34,7 +34,7 @@ impl Default for Config {
         Self {
             network: NetworkConfig {
                 interface: "en0".to_string(),
-                capture_filter: "tcp port 80 or tcp port 443".to_string(),
+                monitor_filter: "tcp port 80 or tcp port 443".to_string(),
                 buffer_size: 65536,
             },
             proxy: ProxyConfig {

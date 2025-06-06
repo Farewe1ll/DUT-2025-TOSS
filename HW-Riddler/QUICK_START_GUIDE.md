@@ -77,17 +77,19 @@ Riddler proxy -a 127.0.0.1 -p 8080
 
 # 配置浏览器使用代理: 127.0.0.1:8080
 # 然后查看拦截的流量
-Riddler logs -s captured
+Riddler logs -s monitord
 ```
 
-### 📦 网络捕获 (需要sudo)
+### 📦 网络监听 (需要sudo)
 ```bash
-# 开始包捕获
-sudo Riddler capture -i en0 -f "tcp port 80 or tcp port 443"
+# 开始包监听
+sudo Riddler monitor -i en0 -f "tcp port 80 or tcp port 443"
 
-# 实时重放捕获的请求
-sudo Riddler capture -i en0 --replay
+# 实时重放监听的请求
+sudo Riddler monitor -i en0 --replay
 ```
+
+> 监听结束后需要先按下 Ctrl + C 再输入 Q 最后按下 Enter 退出监听
 
 ## 🚨 响应问题诊断
 
@@ -168,7 +170,7 @@ Riddler request -u "https://site.com/protected"
 
 ### 常见问题
 
-#### 1. 网络捕获权限错误
+#### 1. 网络监听权限错误
 ```bash
 # macOS
 sudo chown root:admin ./Riddler
@@ -220,9 +222,9 @@ cd /Users/farewe1ll/TOSS/HW-Riddler
 - 使用适当的延迟避免服务器过载 (`-d 500`)
 - 限制重放次数避免影响目标服务 (`-c 2`)
 
-### 4. 网络捕获
+### 4. 网络监听
 - 使用精确的BPF过滤器减少无关流量
-- 定期停止捕获避免日志文件过大
+- 定期停止监听避免日志文件过大
 
 ## 📚 更多资源
 

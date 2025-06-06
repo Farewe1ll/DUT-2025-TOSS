@@ -3,10 +3,10 @@ use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(name = "riddler")]
-#[command(about = "HW-Riddler - A comprehensive network traffic interceptor, HTTP/HTTPS request tool, and performance analyzer")]
+#[command(about = "HW-Riddler - A comprehensive network traffic monitor, HTTP/HTTPS request tool, and performance analyzer")]
 #[command(long_about = "
 HW-Riddler is a powerful network analysis tool that provides:
-• Network packet capture and HTTP request parsing
+• Network packet monitor and HTTP request monitoring
 • HTTP/HTTPS client with cookie management
 • Request logging, replay, and performance analysis
 • Proxy server functionality
@@ -20,13 +20,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start network traffic capture and HTTP request parsing
-    #[clap(long_about = "Capture network packets on specified interface and parse HTTP requests. \
+    /// Start network traffic monitoring and HTTP request parsing
+    #[clap(long_about = "Monitor network packets on specified interface and parse HTTP requests. \
                          Requires administrator privileges. Supports BPF filters for packet filtering. \
                          Use --replay to enable automatic request replay functionality.")]
-    Capture {
-        /// Network interface to capture packets on (e.g., en0, eth0, wlan0)
-        #[arg(short, long, default_value = "en0", help = "Network interface for packet capture")]
+    Monitor {
+        /// Network interface to monitor packets on (e.g., en0, eth0, wlan0)
+        #[arg(short, long, default_value = "en0", help = "Network interface for packet monitoring")]
         interface: String,
 
         /// Berkeley Packet Filter (BPF) expression for packet filtering
@@ -34,8 +34,8 @@ pub enum Commands {
               help = "BPF filter expression (e.g., 'host example.com', 'tcp port 443')")]
         filter: String,
 
-        /// Enable automatic replay of captured HTTP requests
-        #[arg(short, long, help = "Automatically replay captured HTTP requests")]
+        /// Enable automatic replay of monitored HTTP requests
+        #[arg(short, long, help = "Automatically replay monitored HTTP requests")]
         replay: bool,
     },
 
@@ -78,7 +78,7 @@ pub enum Commands {
 
     /// View and analyze request logs with filtering and statistics
     #[clap(long_about = "View detailed request/response logs stored in JSON format. \
-                         Supports filtering by source (captured/manual/replay), content search, \
+                         Supports filtering by source (monitor/manual/replay), content search, \
                          and comprehensive statistics generation.")]
     Logs {
         /// Maximum number of recent log entries to display
@@ -86,7 +86,7 @@ pub enum Commands {
         limit: usize,
 
         /// Filter logs by request source type
-        #[arg(short, long, help = "Filter by source: captured, manual, or replay")]
+        #[arg(short, long, help = "Filter by source: monitored, manual, or replay")]
         source: Option<String>,
 
         /// Search term to filter log entries
@@ -98,7 +98,7 @@ pub enum Commands {
         stats: bool,
     },
 
-    /// Replay previously captured or manual HTTP requests
+    /// Replay previously monitord or manual HTTP requests
     #[clap(long_about = "Replay HTTP requests from the request log with customizable repetition and timing. \
                          Supports filtering by request source and batch processing with configurable delays. \
                          Useful for load testing and request pattern analysis.")]
@@ -108,7 +108,7 @@ pub enum Commands {
         limit: usize,
 
         /// Filter requests by source before replaying
-        #[arg(short, long, help = "Filter by source: captured or manual")]
+        #[arg(short, long, help = "Filter by source: monitored or manual")]
         source: Option<String>,
 
         /// Number of times to replay each selected request

@@ -1,11 +1,11 @@
-# HW-Riddler - 网络流量拦截器和HTTP/HTTPS请求工具
+# HW-Riddler - 网络流量监控器和HTTP/HTTPS请求工具
 
 HW-Riddler是一个全面的网络流量分析和HTTP/HTTPS请求工具，提供以下功能：
 
 ## 功能特性
 
-### 🌐 网络流量捕获
-- 本地网络数据包捕获和拦截
+### 🌐 网络流量监控
+- 本地网络数据包监控和分析
 - HTTP/HTTPS请求解析
 - 可配置的数据包过滤器
 - 实时流量监控
@@ -43,7 +43,7 @@ HW-Riddler是一个全面的网络流量分析和HTTP/HTTPS请求工具，提供
 ### 🔄 代理服务器
 - HTTP/HTTPS代理服务器
 - CONNECT方法支持（HTTPS隧道）
-- 流量转发和拦截
+- 流量转发和监控
 
 ## 安装
 
@@ -70,7 +70,7 @@ cargo build --release
 # 查看子命令帮助
 ./Riddler request --help    # HTTP请求参数
 ./Riddler cookie --help     # Cookie管理参数
-./Riddler capture --help    # 网络捕获参数
+./Riddler monitor --help    # 网络监控参数
 ./Riddler logs --help       # 日志查看参数
 ./Riddler replay --help     # 请求重放参数
 ./Riddler proxy --help      # 代理服务器参数
@@ -101,9 +101,9 @@ cargo build --release
   clear                    清除所有Cookie
 ```
 
-### 📦 网络捕获 (capture)
+### 📦 网络监控 (monitor)
 ```bash
-./Riddler capture [选项]
+./Riddler monitor [选项]
   -i, --interface <IF>     网络接口 [默认: en0]
   -f, --filter <FILTER>    BPF过滤器 [默认: "tcp port 80 or tcp port 443"]
   -r, --replay             启用自动重放
@@ -113,7 +113,7 @@ cargo build --release
 ```bash
 ./Riddler logs [选项]
   -l, --limit <NUMBER>     显示条数 [默认: 10]
-  -s, --source <SOURCE>    按来源过滤 (captured/manual/replay)
+  -s, --source <SOURCE>    按来源过滤 (monitored/manual/replay)
   -q, --query <QUERY>      搜索关键词
       --stats              显示统计信息
 ```
@@ -122,7 +122,7 @@ cargo build --release
 ```bash
 ./Riddler replay [选项]
   -l, --limit <NUMBER>     重放请求数 [默认: 1]
-  -s, --source <SOURCE>    按来源过滤 (captured/manual)
+  -s, --source <SOURCE>    按来源过滤 (monitored/manual)
   -c, --count <COUNT>      每个请求重复次数 [默认: 1]
   -d, --delay <MS>         重放间隔(毫秒) [默认: 100]
 ```
@@ -181,17 +181,17 @@ cargo build --release
 ./Riddler cookie clear
 ```
 
-### 3. 网络流量捕获
+### 3. 网络流量监控
 
 ```bash
-# 开始网络捕获 (需要root权限)
-sudo ./Riddler capture -i en0 -f "tcp port 80 or tcp port 443"
+# 开始网络监控 (需要root权限)
+sudo ./Riddler monitor -i en0 -f "tcp port 80 or tcp port 443"
 
 # 启用请求重放
-sudo ./Riddler capture -i en0 --replay
+sudo ./Riddler monitor -i en0 --replay
 
 # 自定义过滤器
-sudo ./Riddler capture -i en0 -f "host www.example.com"
+sudo ./Riddler monitor -i en0 -f "host www.example.com"
 ```
 
 ### 4. 查看请求日志
@@ -203,7 +203,7 @@ sudo ./Riddler capture -i en0 -f "host www.example.com"
 # 查看最近50条记录
 ./Riddler logs -l 50
 
-# 按来源过滤 (captured/manual/replay)
+# 按来源过滤 (monitored/manual/replay)
 ./Riddler logs -s manual
 
 # 搜索特定内容
@@ -275,11 +275,11 @@ sudo ./Riddler capture -i en0 -f "host www.example.com"
 ## 系统要求
 
 ### macOS
-- 网络捕获功能需要root权限
+- 网络监听功能需要root权限
 - 需要安装libpcap开发库
 
 ### Linux
-- 网络捕获功能需要root权限或CAP_NET_RAW capability
+- 网络监听功能需要root权限或CAP_NET_RAW capability
 - 需要安装libpcap-dev
 
 ### 依赖库
@@ -316,12 +316,12 @@ sudo ./Riddler capture -i en0 -f "host www.example.com"
 ./Riddler proxy -p 8080
 
 # 2. 配置浏览器使用代理 (127.0.0.1:8080)
-# 3. 查看拦截的流量
-./Riddler logs -s captured
+# 3. 查看监控的流量
+./Riddler logs -s monitored
 
 # 4. 重放特定请求
 ./Riddler logs -q "login" | # 找到登录请求
-./Riddler capture --replay  # 重放请求
+./Riddler monitor --replay  # 重放请求
 ```
 
 ### API开发和调试
@@ -338,19 +338,19 @@ sudo ./Riddler capture -i en0 -f "host www.example.com"
 
 ### 网络流量分析
 ```bash
-# 捕获特定域名的流量
-sudo ./Riddler capture -f "host api.example.com"
+# 监控特定域名的流量
+sudo ./Riddler monitor -f "host api.example.com"
 
-# 分析捕获的数据
+# 分析监控的数据
 ./Riddler logs --stats
-./Riddler logs -s captured -q "api.example.com"
+./Riddler logs -s monitored -q "api.example.com"
 ```
 
 ## 安全注意事项
 
 ⚠️ **重要安全提醒:**
 
-1. **网络捕获**: 需要管理员权限，请谨慎使用
+1. **网络监控**: 需要管理员权限，请谨慎使用
 2. **Cookie存储**: Cookie以明文形式存储，请保护文件安全
 3. **代理服务器**: 仅用于测试环境，不建议生产环境使用
 4. **SSL验证**: 默认启用SSL验证，可根据需要配置
@@ -358,7 +358,7 @@ sudo ./Riddler capture -f "host api.example.com"
 
 ## 故障排除
 
-### 网络捕获权限问题
+### 网络监控权限问题
 ```bash
 # macOS
 sudo chown root:admin /path/to/Riddler

@@ -8,6 +8,7 @@ use pnet::packet::{
     Packet,
 };
 use std::collections::HashMap;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, Mutex};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -34,13 +35,14 @@ pub struct HttpRequest {
     pub source_port: u16,
 }
 
-pub struct PacketCapture {
+pub struct PacketMonitor {
     interface: String,
     filter: String,
-    packet_sender: mpsc::UnboundedSender<NetworkPacket>,
+    packet_sender: Arc<Mutex<Option<mpsc::UnboundedSender<NetworkPacket>>>>,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
-impl PacketCapture {
+impl PacketMonitor {
     pub fn new(
         interface: String,
         filter: String,
@@ -49,26 +51,29 @@ impl PacketCapture {
         Self {
             interface,
             filter,
-            packet_sender,
+            packet_sender: Arc::new(Mutex::new(Some(packet_sender))),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
-    }    pub async fn start_capture(&self) -> Result<()> {
+    }
+
+    pub async fn start_monitor(&self) -> Result<tokio::task::JoinHandle<()>> {
         let device = Device::list()?
             .into_iter()
             .find(|d| d.name == self.interface)
             .ok_or_else(|| anyhow!("Interface {} not found", self.interface))?;
 
-        info!("Starting packet capture on interface: {}", self.interface);
+        info!("Starting packet monitor on interface: {}", self.interface);
 
-        // Create capture with better error handling
+        // Create monitor with better error handling and shorter timeout for faster shutdown
         let mut cap = match Capture::from_device(device) {
             Ok(cap) => cap
                 .promisc(true)
                 .snaplen(65535)
                 .buffer_size(1_000_000)
-                .timeout(1000)
+                .timeout(100)  // Shorter timeout for faster shutdown response
                 .open()?,
             Err(e) => {
-                error!("Failed to create capture: {}", e);
+                error!("Failed to create monitor: {}", e);
                 return Err(e.into());
             }
         };
@@ -79,19 +84,31 @@ impl PacketCapture {
             return Err(e.into());
         }
 
-        let sender = self.packet_sender.clone();
+        // Clone the sender from the Mutex
+        let sender = {
+            let guard = self.packet_sender.lock().unwrap();
+            guard.as_ref().ok_or_else(|| anyhow!("Packet sender not available"))?.clone()
+        };
 
-        // Spawn blocking task for packet capture
-        tokio::task::spawn_blocking(move || {
-            info!("Packet capture loop started");
+        let shutdown_flag = self.shutdown_flag.clone();
+
+        // Spawn blocking task for packet monitor with shutdown support
+        let handle = tokio::task::spawn_blocking(move || {
+            info!("Packet monitor loop started");
             let mut packet_count = 0;
 
             loop {
+                // Check shutdown flag frequently
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    info!("Shutdown requested, stopping packet monitor");
+                    break;
+                }
+
                 match cap.next_packet() {
                     Ok(packet) => {
                         packet_count += 1;
                         if packet_count % 100 == 0 {
-                            info!("Captured {} packets", packet_count);
+                            info!("Monitord {} packets", packet_count);
                         }
 
                         if let Some(network_packet) = Self::parse_packet(packet.data) {
@@ -102,7 +119,7 @@ impl PacketCapture {
                         }
                     }
                     Err(pcap::Error::TimeoutExpired) => {
-                        // Timeout is normal, continue
+                        // Timeout is normal, continue but check shutdown flag more frequently
                         continue;
                     }
                     Err(e) => {
@@ -112,10 +129,25 @@ impl PacketCapture {
                 }
             }
 
-            info!("Packet capture loop ended");
+            info!("Packet monitor loop ended, monitord {} packets total", packet_count);
+            // Explicitly drop the sender to signal that no more packets will be sent
+            drop(sender);
+            info!("Packet sender dropped, signaling channel closure");
         });
 
-        Ok(())
+        Ok(handle)
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown_flag.store(true, Ordering::Relaxed);
+    }
+
+    pub fn release_sender(&self) {
+        let mut guard = self.packet_sender.lock().unwrap();
+        if let Some(sender) = guard.take() {
+            info!("Releasing packet sender from PacketMonitor");
+            drop(sender);
+        }
     }
 
     fn parse_packet(data: &[u8]) -> Option<NetworkPacket> {

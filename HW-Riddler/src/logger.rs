@@ -13,7 +13,7 @@ pub struct RequestLogEntry {
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub request: HttpRequestInfo,
     pub response: Option<HttpResponseInfo>,
-    pub source: String, // "captured" or "manual"
+    pub source: String, // "monitord" or "manual"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub struct HttpRequestInfo {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct RequestStats {
     pub total_requests: usize,
-    pub captured_requests: usize,
+    pub monitord_requests: usize,
     pub manual_requests: usize,
     pub replay_requests: usize,
     pub successful_requests: usize,
@@ -234,7 +234,7 @@ impl RequestLogger {
                 stats.total_requests += 1;
 
                 match entry.source.as_str() {
-                    "captured" => stats.captured_requests += 1,
+                    "monitord" => stats.monitord_requests += 1,
                     "manual" => stats.manual_requests += 1,
                     "replay" => stats.replay_requests += 1,
                     _ => {}

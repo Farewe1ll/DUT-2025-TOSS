@@ -156,17 +156,17 @@ impl HttpClient {
         })
     }
 
-    pub async fn replay_request(&self, captured_request: &crate::network::HttpRequest) -> Result<HttpResponseInfo> {
-        let body = if captured_request.body.is_empty() {
+    pub async fn replay_request(&self, monitord_request: &crate::network::HttpRequest) -> Result<HttpResponseInfo> {
+        let body = if monitord_request.body.is_empty() {
             None
         } else {
-            Some(String::from_utf8_lossy(&captured_request.body).to_string())
+            Some(String::from_utf8_lossy(&monitord_request.body).to_string())
         };
 
         self.send_request(HttpRequestBuilder {
-            method: captured_request.method.clone(),
-            url: captured_request.url.clone(),
-            headers: captured_request.headers.clone(),
+            method: monitord_request.method.clone(),
+            url: monitord_request.url.clone(),
+            headers: monitord_request.headers.clone(),
             body,
             timeout_seconds: 30,
             follow_redirects: true,
