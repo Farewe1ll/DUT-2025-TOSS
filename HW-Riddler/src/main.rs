@@ -20,745 +20,744 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
 
-    let cli = Cli::parse();
-    let config = Config::default();
+	tracing_subscriber::fmt::init();
 
-    // Initialize components
-    let cookie_manager = Arc::new(CookieManager::new(config.storage.cookie_cache_path.clone()));
-    let http_client = Arc::new(HttpClient::new(cookie_manager.clone())?);
-    let logger = Arc::new(RequestLogger::new(&config.storage.request_log_path).await?);
+	let cli = Cli::parse();
+	let config = Config::default();
 
-    // Load existing cookies
-    if let Err(e) = cookie_manager.load_from_file().await {
-        warn!("Failed to load cookies from file: {}", e);
-    }
 
-    match cli.command {
-        Commands::Monitor { interface, filter, replay } => {
-            start_monitor(interface, filter, replay, cookie_manager.clone(), http_client.clone(), logger.clone()).await?;
-        }
+	let cookie_manager = Arc::new(CookieManager::new(config.storage.cookie_cache_path.clone()));
+	let http_client = Arc::new(HttpClient::new(cookie_manager.clone())?);
+	let logger = Arc::new(RequestLogger::new(&config.storage.request_log_path).await?);
 
-        Commands::Request { method, url, headers, body, timeout } => {
-            send_manual_request(method, url, headers, body, timeout, http_client.clone(), logger.clone()).await?;
-        }
 
-        Commands::Cookie { action } => {
-            handle_cookie_command(action, cookie_manager.clone()).await?;
-        }
+	if let Err(e) = cookie_manager.load_from_file().await {
+		warn!("Failed to load cookies from file: {}", e);
+	}
 
-        Commands::Logs { limit, source, query, stats } => {
-            show_logs(limit, source, query, stats, logger.clone()).await?;
-        }
+	match cli.command {
+		Commands::Monitor { interface, filter, replay } => {
+			start_monitor(interface, filter, replay, cookie_manager.clone(), http_client.clone(), logger.clone()).await?;
+		}
 
-        Commands::Replay { limit, source, count, delay } => {
-            replay_requests(limit, source, count, delay, http_client.clone(), logger.clone()).await?;
-        }
+		Commands::Request { method, url, headers, body, timeout } => {
+			send_manual_request(method, url, headers, body, timeout, http_client.clone(), logger.clone()).await?;
+		}
 
-        Commands::Proxy { address, port } => {
-            start_proxy(address, port).await?;
-        }
+		Commands::Cookie { action } => {
+			handle_cookie_command(action, cookie_manager.clone()).await?;
+		}
 
-        Commands::Analyze { url, iterations, report } => {
-            analyze_performance(url, iterations, report, http_client.clone()).await?;
-        }
-    }
+		Commands::Logs { limit, source, query, stats } => {
+			show_logs(limit, source, query, stats, logger.clone()).await?;
+		}
 
-    // Save cookies before exit
-    if let Err(e) = cookie_manager.save_to_file().await {
-        error!("Failed to save cookies: {}", e);
-    }
+		Commands::Replay { limit, source, count, delay } => {
+			replay_requests(limit, source, count, delay, http_client.clone(), logger.clone()).await?;
+		}
 
-    Ok(())
+		Commands::Proxy { address, port } => {
+			start_proxy(address, port).await?;
+		}
+
+		Commands::Analyze { url, iterations, report } => {
+			analyze_performance(url, iterations, report, http_client.clone()).await?;
+		}
+	}
+
+
+	if let Err(e) = cookie_manager.save_to_file().await {
+		error!("Failed to save cookies: {}", e);
+	}
+
+	Ok(())
 }
 
 async fn start_monitor(
-    interface: String,
-    filter: String,
-    replay: bool,
-    _cookie_manager: Arc<CookieManager>,
-    http_client: Arc<HttpClient>,
-    logger: Arc<RequestLogger>,
+	interface: String,
+	filter: String,
+	replay: bool,
+	_cookie_manager: Arc<CookieManager>,
+	http_client: Arc<HttpClient>,
+	logger: Arc<RequestLogger>,
 ) -> Result<()> {
-    info!("Starting network monitor on {} with filter: {}", interface, filter);
+	info!("Starting network monitor on {} with filter: {}", interface, filter);
 
-    let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
-    let monitor = Arc::new(PacketMonitor::new(interface, filter, packet_tx));
+	let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
+	let monitor = Arc::new(PacketMonitor::new(interface, filter, packet_tx));
 
-    // Start packet monitor and get the task handle
-    let monitor_handle = monitor.start_monitor().await?;
 
-    println!("Packet monitor started.");
-    println!("Ctrl + C then 'q' and Enter to quit");
-    // println!("🎮 Press 'q' + Enter to quit");
+	let monitor_handle = monitor.start_monitor().await?;
 
-    // Setup unified signal handler
-    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
-    let monitor_for_signal = monitor.clone();
-    let monitor_for_keyboard = monitor.clone();
-    let monitor_for_unix = monitor.clone();
-    let shutdown_tx_clone = shutdown_tx.clone();
-    let shutdown_tx_keyboard = shutdown_tx.clone();
+	println!("Packet monitor started.");
+	println!("Ctrl + C then 'q' and Enter to quit");
 
-    // Keyboard input handler for user-friendly quit
-    tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, BufReader};
 
-        let stdin = tokio::io::stdin();
-        let reader = BufReader::new(stdin);
-        let mut lines = reader.lines();
+	let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel();
+	let monitor_for_signal = monitor.clone();
+	let monitor_for_keyboard = monitor.clone();
+	let monitor_for_unix = monitor.clone();
+	let shutdown_tx_clone = shutdown_tx.clone();
+	let shutdown_tx_keyboard = shutdown_tx.clone();
 
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let input = line.trim().to_lowercase();
-                    if input == "q" || input == "quit" || input == "exit" {
-                        info!("User requested quit via keyboard input");
-                        monitor_for_keyboard.shutdown();
-                        monitor_for_keyboard.release_sender();
-                        let _ = shutdown_tx_keyboard.send(());
-                        break;
-                    } else if !input.is_empty() {
-                        println!("Unknown command '{}'. Press Ctrl + C then q and Enter to quit.", input);
-                    }
-                }
-                Ok(None) => {
-                    info!("Stdin closed, shutting down...");
-                    monitor_for_keyboard.shutdown();
-                    monitor_for_keyboard.release_sender();
-                    let _ = shutdown_tx_keyboard.send(());
-                    break;
-                }
-                Err(e) => {
-                    error!("Error reading from stdin: {}", e);
-                    break;
-                }
-            }
-        }
-    });
 
-    // Signal handler for Ctrl+C
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Ctrl+C received, shutting down");
-                monitor_for_signal.shutdown();
-                monitor_for_signal.release_sender();
-                let _ = shutdown_tx.send(());
+	tokio::spawn(async move {
+		use tokio::io::{AsyncBufReadExt, BufReader};
 
-                // Give main loop time to shutdown gracefully
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                std::process::exit(0);
-            }
-            Err(err) => {
-                error!("Unable to listen for Ctrl+C signal: {}", err);
-            }
-        }
-    });
+		let stdin = tokio::io::stdin();
+		let reader = BufReader::new(stdin);
+		let mut lines = reader.lines();
 
-    // Unix signal handler for SIGTERM/SIGINT
-    #[cfg(unix)]
-    {
-        tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
+		loop {
+			match lines.next_line().await {
+				Ok(Some(line)) => {
+					let input = line.trim().to_lowercase();
+					if input == "q" || input == "quit" || input == "exit" {
+						info!("User requested quit via keyboard input");
+						monitor_for_keyboard.shutdown();
+						monitor_for_keyboard.release_sender();
+						let _ = shutdown_tx_keyboard.send(());
+						break;
+					} else if !input.is_empty() {
+						println!("Unknown command '{}'. Press Ctrl + C then q and Enter to quit.", input);
+					}
+				}
+				Ok(None) => {
+					info!("Stdin closed, shutting down...");
+					monitor_for_keyboard.shutdown();
+					monitor_for_keyboard.release_sender();
+					let _ = shutdown_tx_keyboard.send(());
+					break;
+				}
+				Err(e) => {
+					error!("Error reading from stdin: {}", e);
+					break;
+				}
+			}
+		}
+	});
 
-            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
-            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
 
-            tokio::select! {
-                _ = sigint.recv() => {
-                    info!("SIGINT received, shutting down");
-                    monitor_for_unix.shutdown();
-                    monitor_for_unix.release_sender();
-                    let _ = shutdown_tx_clone.send(());
+	tokio::spawn(async move {
+		match tokio::signal::ctrl_c().await {
+			Ok(()) => {
+				info!("Ctrl+C received, shutting down");
+				monitor_for_signal.shutdown();
+				monitor_for_signal.release_sender();
+				let _ = shutdown_tx.send(());
 
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    std::process::exit(0);
-                }
-                _ = sigterm.recv() => {
-                    info!("SIGTERM received, shutting down");
-                    monitor_for_unix.shutdown();
-                    monitor_for_unix.release_sender();
-                    let _ = shutdown_tx_clone.send(());
 
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    std::process::exit(0);
-                }
-            }
-        });
-    }
+				tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+				std::process::exit(0);
+			}
+			Err(err) => {
+				error!("Unable to listen for Ctrl+C signal: {}", err);
+			}
+		}
+	});
 
-    let mut packet_count = 0;
-    let mut exit_reason = "unknown";
 
-    // Process monitord packets
-    loop {
-        // Check for shutdown signal first
-        match shutdown_rx.try_recv() {
-            Ok(_) => {
-                info!("Shutdown signal received, stopping monitor");
-                exit_reason = "shutdown_signal";
-                break;
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                info!("Shutdown channel closed");
-                exit_reason = "shutdown_channel_closed";
-                break;
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No shutdown signal, continue processing
-            }
-        }
+	#[cfg(unix)]
+	{
+		tokio::spawn(async move {
+			use tokio::signal::unix::{signal, SignalKind};
 
-        // Check if monitor task is finished
-        if monitor_handle.is_finished() {
-            info!("Monitor task completed");
-            exit_reason = "monitor_task_finished";
-            break;
-        }
+			let mut sigint = signal(SignalKind::interrupt()).expect("Failed to create SIGINT handler");
+			let mut sigterm = signal(SignalKind::terminate()).expect("Failed to create SIGTERM handler");
 
-        // Process packets in batches
-        let mut batch_processed = 0;
-        const MAX_BATCH_SIZE: usize = 10;
-        let mut channel_closed = false;
+			tokio::select! {
+				_ = sigint.recv() => {
+					info!("SIGINT received, shutting down");
+					monitor_for_unix.shutdown();
+					monitor_for_unix.release_sender();
+					let _ = shutdown_tx_clone.send(());
 
-        while batch_processed < MAX_BATCH_SIZE {
-            match packet_rx.try_recv() {
-                Ok(packet) => {
-                    packet_count += 1;
-                    batch_processed += 1;
+					tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+					std::process::exit(0);
+				}
+				_ = sigterm.recv() => {
+					info!("SIGTERM received, shutting down");
+					monitor_for_unix.shutdown();
+					monitor_for_unix.release_sender();
+					let _ = shutdown_tx_clone.send(());
 
-                    if let Some(http_request) = HttpParser::parse_http_request(&packet) {
-                        info!("Monitored HTTP request #{}: {} {}", packet_count, http_request.method, http_request.url);
+					tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+					std::process::exit(0);
+				}
+			}
+		});
+	}
 
-                        // Log the monitored request
-                        if let Err(e) = logger.log_request(&http_request, "monitored").await {
-                            error!("Failed to log request: {}", e);
-                        }
+	let mut packet_count = 0;
+	let mut exit_reason = "unknown";
 
-                        // Replay request if enabled
-                        if replay {
-                            match http_client.replay_request(&http_request).await {
-                                Ok(response) => {
-                                    info!("Replay response: {} - {}", response.status, response.final_url);
 
-                                    // Log the replayed request with response
-                                    if let Err(e) = logger.log_request_response(&http_request, &response, "replay").await {
-                                        error!("Failed to log replay response: {}", e);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to replay request: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    // No more packets, exit batch loop
-                    break;
-                }
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    info!("Packet channel closed - monitor finished");
-                    channel_closed = true;
-                    exit_reason = "packet_channel_closed";
-                    break;
-                }
-            }
-        }
+	loop {
 
-        // If packet channel closed, exit main loop immediately
-        if channel_closed {
-            break;
-        }
+		match shutdown_rx.try_recv() {
+			Ok(_) => {
+				info!("Shutdown signal received, stopping monitor");
+				exit_reason = "shutdown_signal";
+				break;
+			}
+			Err(mpsc::error::TryRecvError::Disconnected) => {
+				info!("Shutdown channel closed");
+				exit_reason = "shutdown_channel_closed";
+				break;
+			}
+			Err(mpsc::error::TryRecvError::Empty) => {
 
-        // if batch_processed > 0 {
-        //     info!("Processed {} packets in batch, total: {}", batch_processed, packet_count);
-        // }
+			}
+		}
 
-        // Brief sleep to allow other tasks to run
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
 
-    info!("Main processing loop ended (reason: {})", exit_reason);
+		if monitor_handle.is_finished() {
+			info!("Monitor task completed");
+			exit_reason = "monitor_task_finished";
+			break;
+		}
 
-    // Wait for the monitor task to complete
-    if !monitor_handle.is_finished() {
-        info!("Waiting for packet monitor task to finish...");
-        if let Err(e) = monitor_handle.await {
-            error!("Error waiting for monitor task: {}", e);
-        }
-    }
 
-    info!("Monitord {} packets total", packet_count);
+		let mut batch_processed = 0;
+		const MAX_BATCH_SIZE: usize = 10;
+		let mut channel_closed = false;
 
-    // Ensure proper exit for signal-triggered shutdown
-    if exit_reason == "shutdown_signal" {
-        std::process::exit(0);
-    }
+		while batch_processed < MAX_BATCH_SIZE {
+			match packet_rx.try_recv() {
+				Ok(packet) => {
+					packet_count += 1;
+					batch_processed += 1;
 
-    Ok(())
+					if let Some(http_request) = HttpParser::parse_http_request(&packet) {
+						info!("Monitored HTTP request #{}: {} {}", packet_count, http_request.method, http_request.url);
+
+
+						if let Err(e) = logger.log_request(&http_request, "monitored").await {
+							error!("Failed to log request: {}", e);
+						}
+
+
+						if replay {
+							match http_client.replay_request(&http_request).await {
+								Ok(response) => {
+									info!("Replay response: {} - {}", response.status, response.final_url);
+
+
+									if let Err(e) = logger.log_request_response(&http_request, &response, "replay").await {
+										error!("Failed to log replay response: {}", e);
+									}
+								}
+								Err(e) => {
+									error!("Failed to replay request: {}", e);
+								}
+							}
+						}
+					}
+				}
+				Err(mpsc::error::TryRecvError::Empty) => {
+
+					break;
+				}
+				Err(mpsc::error::TryRecvError::Disconnected) => {
+					info!("Packet channel closed - monitor finished");
+					channel_closed = true;
+					exit_reason = "packet_channel_closed";
+					break;
+				}
+			}
+		}
+
+
+		if channel_closed {
+			break;
+		}
+
+
+
+
+
+
+		tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+	}
+
+	info!("Main processing loop ended (reason: {})", exit_reason);
+
+
+	if !monitor_handle.is_finished() {
+		info!("Waiting for packet monitor task to finish...");
+		if let Err(e) = monitor_handle.await {
+			error!("Error waiting for monitor task: {}", e);
+		}
+	}
+
+	info!("Monitord {} packets total", packet_count);
+
+
+	if exit_reason == "shutdown_signal" {
+		std::process::exit(0);
+	}
+
+	Ok(())
 }
 
 async fn send_manual_request(
-    method: String,
-    url: String,
-    headers: Vec<String>,
-    body: Option<String>,
-    timeout: u64,
-    http_client: Arc<HttpClient>,
-    logger: Arc<RequestLogger>,
+	method: String,
+	url: String,
+	headers: Vec<String>,
+	body: Option<String>,
+	timeout: u64,
+	http_client: Arc<HttpClient>,
+	logger: Arc<RequestLogger>,
 ) -> Result<()> {
-    let parsed_headers = cli::parse_headers(headers);
+	let parsed_headers = cli::parse_headers(headers);
 
-    let request = HttpRequestBuilder {
-        method: method.clone(),
-        url: url.clone(),
-        headers: parsed_headers.clone(),
-        body: body.clone(),
-        timeout_seconds: timeout,
-        follow_redirects: true,
-        verify_ssl: true,
-    };
+	let request = HttpRequestBuilder {
+		method: method.clone(),
+		url: url.clone(),
+		headers: parsed_headers.clone(),
+		body: body.clone(),
+		timeout_seconds: timeout,
+		follow_redirects: true,
+		verify_ssl: true,
+	};
 
-    info!("Sending {} request to {}", method, url);
+	info!("Sending {} request to {}", method, url);
 
-    match http_client.send_request(request).await {
-        Ok(response) => {
-            println!("✅ Response Status: {}", response.status);
-            println!("📝 Response Headers:");
-            for (key, value) in &response.headers {
-                println!("  {}: {}", key, value);
-            }
-            println!("📄 Response Body:");
-            println!("{}", response.body);
-            println!("⏱️  Response Time: {}ms", response.response_time_ms);
+	match http_client.send_request(request).await {
+		Ok(response) => {
+			println!("✅ Response Status: {}", response.status);
+			println!("📝 Response Headers:");
+			for (key, value) in &response.headers {
+				println!("  {}: {}", key, value);
+			}
+			println!("📄 Response Body:");
+			println!("{}", response.body);
+			println!("⏱️  Response Time: {}ms", response.response_time_ms);
 
-            // Log the manual request (async operation)
-            tokio::spawn({
-                let logger = logger.clone();
-                let method = method.clone();
-                let url = url.clone();
-                let parsed_headers = parsed_headers.clone();
-                let body = body.clone().unwrap_or_default();
-                let response = response.clone();
 
-                async move {
-                    if let Err(e) = logger.log_manual_request_response(
-                        &method,
-                        &url,
-                        parsed_headers,
-                        &body,
-                        &response,
-                    ).await {
-                        error!("Failed to log manual request: {}", e);
-                    }
-                }
-            });
+			tokio::spawn({
+				let logger = logger.clone();
+				let method = method.clone();
+				let url = url.clone();
+				let parsed_headers = parsed_headers.clone();
+				let body = body.clone().unwrap_or_default();
+				let response = response.clone();
 
-            println!("✅ Request completed successfully!");
-        }
-        Err(e) => {
-            error!("❌ Request failed: {}", e);
-            println!("❌ Request failed: {}", e);
-        }
-    }
+				async move {
+					if let Err(e) = logger.log_manual_request_response(
+						&method,
+						&url,
+						parsed_headers,
+						&body,
+						&response,
+					).await {
+						error!("Failed to log manual request: {}", e);
+					}
+				}
+			});
 
-    Ok(())
+			println!("✅ Request completed successfully!");
+		}
+		Err(e) => {
+			error!("❌ Request failed: {}", e);
+			println!("❌ Request failed: {}", e);
+		}
+	}
+
+	Ok(())
 }
 
 async fn handle_cookie_command(
-    action: CookieAction,
-    cookie_manager: Arc<CookieManager>,
+	action: CookieAction,
+	cookie_manager: Arc<CookieManager>,
 ) -> Result<()> {
-    match action {
-        CookieAction::List { domain } => {
-            let cookies = cookie_manager.list_cookies(domain.as_deref());
-            for cookie in cookies {
-                println!("{}={} (domain: {}, path: {})",
-                         cookie.name, cookie.value, cookie.domain, cookie.path);
-            }
-        }
+	match action {
+		CookieAction::List { domain } => {
+			let cookies = cookie_manager.list_cookies(domain.as_deref());
+			for cookie in cookies {
+				println!("{}={} (domain: {}, path: {})",
+						cookie.name, cookie.value, cookie.domain, cookie.path);
+			}
+		}
 
-        CookieAction::Add { cookie, url } => {
-            let parsed_url = url::Url::parse(&url)?;
-            cookie_manager.add_cookie(&parsed_url, &cookie)?;
-            cookie_manager.save_to_file().await?;
-            println!("Cookie added successfully");
-        }
+		CookieAction::Add { cookie, url } => {
+			let parsed_url = url::Url::parse(&url)?;
+			cookie_manager.add_cookie(&parsed_url, &cookie)?;
+			cookie_manager.save_to_file().await?;
+			println!("Cookie added successfully");
+		}
 
-        CookieAction::Clean => {
-            cookie_manager.clear_expired();
-            cookie_manager.save_to_file().await?;
-            println!("Expired cookies cleared");
-        }
+		CookieAction::Clean => {
+			cookie_manager.clear_expired();
+			cookie_manager.save_to_file().await?;
+			println!("Expired cookies cleared");
+		}
 
-        CookieAction::Clear => {
-            cookie_manager.clear_all();
-            cookie_manager.save_to_file().await?;
-            println!("All cookies cleared");
-        }
-    }
+		CookieAction::Clear => {
+			cookie_manager.clear_all();
+			cookie_manager.save_to_file().await?;
+			println!("All cookies cleared");
+		}
+	}
 
-    Ok(())
+	Ok(())
 }
 
 async fn show_logs(
-    limit: usize,
-    source: Option<String>,
-    query: Option<String>,
-    show_stats: bool,
-    logger: Arc<RequestLogger>,
+	limit: usize,
+	source: Option<String>,
+	query: Option<String>,
+	show_stats: bool,
+	logger: Arc<RequestLogger>,
 ) -> Result<()> {
-    if show_stats {
-        let stats = logger.get_request_stats().await?;
-        println!("=== Request Statistics ===");
-        println!("Total Requests: {}", stats.total_requests);
-        println!("Monitored: {}, Manual: {}, Replay: {}",
-                 stats.monitord_requests, stats.manual_requests, stats.replay_requests);
-        println!("Successful: {}, Failed: {}", stats.successful_requests, stats.failed_requests);
-        println!("Average Response Time: {}ms", stats.average_response_time);
+	if show_stats {
+		let stats = logger.get_request_stats().await?;
+		println!("=== Request Statistics ===");
+		println!("Total Requests: {}", stats.total_requests);
+		println!("Monitored: {}, Manual: {}, Replay: {}",
+				stats.monitord_requests, stats.manual_requests, stats.replay_requests);
+		println!("Successful: {}, Failed: {}", stats.successful_requests, stats.failed_requests);
+		println!("Average Response Time: {}ms", stats.average_response_time);
 
-        println!("\nMethods:");
-        for (method, count) in &stats.methods {
-            println!("  {}: {}", method, count);
-        }
-        println!();
-        return Ok(());
-    }
+		println!("\nMethods:");
+		for (method, count) in &stats.methods {
+			println!("  {}: {}", method, count);
+		}
+		println!();
+		return Ok(());
+	}
 
-    let logs = if let Some(search_query) = query {
-        logger.search_logs(&search_query, limit).await?
-    } else {
-        logger.read_recent_logs(limit).await?
-    };
+	let logs = if let Some(search_query) = query {
+		logger.search_logs(&search_query, limit).await?
+	} else {
+		logger.read_recent_logs(limit).await?
+	};
 
-    for log in logs {
-        if let Some(ref filter_source) = source {
-            if log.source != *filter_source {
-                continue;
-            }
-        }
+	for log in logs {
+		if let Some(ref filter_source) = source {
+			if log.source != *filter_source {
+				continue;
+			}
+		}
 
-        println!("=== {} [{}] ===", log.timestamp, log.source);
-        println!("{} {} ({}:{})",
-                 log.request.method,
-                 log.request.url,
-                 log.request.source_ip,
-                 log.request.source_port);
+		println!("=== {} [{}] ===", log.timestamp, log.source);
+		println!("{} {} ({}:{})",
+				log.request.method,
+				log.request.url,
+				log.request.source_ip,
+				log.request.source_port);
 
-        if !log.request.body_preview.is_empty() {
-            println!("Body Preview: {}", log.request.body_preview);
-        }
+		if !log.request.body_preview.is_empty() {
+			println!("Body Preview: {}", log.request.body_preview);
+		}
 
-        if let Some(ref response) = log.response {
-            println!("Response: {} ({}ms)", response.status, response.response_time_ms);
-        }
-        println!();
-    }
+		if let Some(ref response) = log.response {
+			println!("Response: {} ({}ms)", response.status, response.response_time_ms);
+		}
+		println!();
+	}
 
-    Ok(())
+	Ok(())
 }
 
 async fn start_proxy(address: String, port: u16) -> Result<()> {
-    println!("Starting HTTP/HTTPS proxy server on {}:{}", address, port);
+	println!("Starting HTTP/HTTPS proxy server on {}:{}", address, port);
 
-    use tokio::net::TcpListener;
+	use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind(format!("{}:{}", address, port)).await?;
-    info!("Proxy server listening on {}:{}", address, port);
+	let listener = TcpListener::bind(format!("{}:{}", address, port)).await?;
+	info!("Proxy server listening on {}:{}", address, port);
 
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        info!("New connection from: {}", addr);
+	loop {
+		let (stream, addr) = listener.accept().await?;
+		info!("New connection from: {}", addr);
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_proxy_connection(stream).await {
-                error!("Proxy connection error: {}", e);
-            }
-        });
-    }
+		tokio::spawn(async move {
+			if let Err(e) = handle_proxy_connection(stream).await {
+				error!("Proxy connection error: {}", e);
+			}
+		});
+	}
 }
 
 async fn handle_proxy_connection(mut stream: tokio::net::TcpStream) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::TcpStream;
+	use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+	use tokio::net::TcpStream;
 
-    let mut reader = BufReader::new(&mut stream);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).await?;
+	let mut reader = BufReader::new(&mut stream);
+	let mut request_line = String::new();
+	reader.read_line(&mut request_line).await?;
 
-    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
-    if parts.len() < 2 {
-        return Ok(());
-    }
+	let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+	if parts.len() < 2 {
+		return Ok(());
+	}
 
-    let method = parts[0];
-    let target = parts[1];
+	let method = parts[0];
+	let target = parts[1];
 
-    if method == "CONNECT" {
-        // Handle HTTPS CONNECT request
-        let host_port: Vec<&str> = target.split(':').collect();
-        if host_port.len() != 2 {
-            return Ok(());
-        }
+	if method == "CONNECT" {
 
-        let host = host_port[0];
-        let port: u16 = host_port[1].parse().unwrap_or(443);
+		let host_port: Vec<&str> = target.split(':').collect();
+		if host_port.len() != 2 {
+			return Ok(());
+		}
 
-        info!("CONNECT request to {}:{}", host, port);
+		let host = host_port[0];
+		let port: u16 = host_port[1].parse().unwrap_or(443);
 
-        // Connect to target server
-        match TcpStream::connect(format!("{}:{}", host, port)).await {
-            Ok(target_stream) => {
-                // Send 200 Connection Established
-                let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
-                stream.write_all(response.as_bytes()).await?;
+		info!("CONNECT request to {}:{}", host, port);
 
-                // Start tunneling
-                let (mut client_read, mut client_write) = stream.into_split();
-                let (mut target_read, mut target_write) = target_stream.into_split();
 
-                tokio::spawn(async move {
-                    let _ = tokio::io::copy(&mut client_read, &mut target_write).await;
-                });
+		match TcpStream::connect(format!("{}:{}", host, port)).await {
+			Ok(target_stream) => {
 
-                tokio::spawn(async move {
-                    let _ = tokio::io::copy(&mut target_read, &mut client_write).await;
-                });
-            }
-            Err(e) => {
-                error!("Failed to connect to target: {}", e);
-                let response = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
-                stream.write_all(response.as_bytes()).await?;
-            }
-        }
-    } else {
-        // Handle regular HTTP request
-        info!("HTTP request: {} {}", method, target);
+				let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
+				stream.write_all(response.as_bytes()).await?;
 
-        // Read remaining headers
-        let mut headers = Vec::new();
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).await?;
-            if line.trim().is_empty() {
-                break;
-            }
-            headers.push(line);
-        }
 
-        // For demonstration, just return a simple response
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nProxy handled {} request",
-            method
-        );
-        stream.write_all(response.as_bytes()).await?;
-    }
+				let (mut client_read, mut client_write) = stream.into_split();
+				let (mut target_read, mut target_write) = target_stream.into_split();
 
-    Ok(())
+				tokio::spawn(async move {
+					let _ = tokio::io::copy(&mut client_read, &mut target_write).await;
+				});
+
+				tokio::spawn(async move {
+					let _ = tokio::io::copy(&mut target_read, &mut client_write).await;
+				});
+			}
+			Err(e) => {
+				error!("Failed to connect to target: {}", e);
+				let response = "HTTP/1.1 502 Bad Gateway\r\n\r\n";
+				stream.write_all(response.as_bytes()).await?;
+			}
+		}
+	} else {
+
+		info!("HTTP request: {} {}", method, target);
+
+
+		let mut headers = Vec::new();
+		loop {
+			let mut line = String::new();
+			reader.read_line(&mut line).await?;
+			if line.trim().is_empty() {
+				break;
+			}
+			headers.push(line);
+		}
+
+
+		let response = format!(
+			"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 27\r\n\r\nProxy handled {} request",
+			method
+		);
+		stream.write_all(response.as_bytes()).await?;
+	}
+
+	Ok(())
 }
 
 async fn replay_requests(
-    limit: usize,
-    source: Option<String>,
-    count: usize,
-    delay: u64,
-    http_client: Arc<HttpClient>,
-    logger: Arc<RequestLogger>,
+	limit: usize,
+	source: Option<String>,
+	count: usize,
+	delay: u64,
+	http_client: Arc<HttpClient>,
+	logger: Arc<RequestLogger>,
 ) -> Result<()> {
-    info!("Starting request replay - limit: {}, count: {}, delay: {}ms", limit, count, delay);
+	info!("Starting request replay - limit: {}, count: {}, delay: {}ms", limit, count, delay);
 
-    // Get recent requests to replay
-    let logs = logger.read_recent_logs(limit).await?;
-    let mut requests_to_replay = Vec::new();
 
-    for log in logs {
-        // Filter by source if specified
-        if let Some(ref filter_source) = source {
-            if log.source != *filter_source {
-                continue;
-            }
-        }
+	let logs = logger.read_recent_logs(limit).await?;
+	let mut requests_to_replay = Vec::new();
 
-        // Convert log entry back to HttpRequestBuilder
-        let request = HttpRequestBuilder {
-            method: log.request.method.clone(),
-            url: log.request.url.clone(),
-            headers: log.request.headers.clone(),
-            body: if log.request.body_preview.is_empty() {
-                None
-            } else {
-                Some(log.request.body_preview.clone())
-            },
-            timeout_seconds: 30,
-            follow_redirects: true,
-            verify_ssl: true,
-        };
+	for log in logs {
 
-        requests_to_replay.push(request);
-    }
+		if let Some(ref filter_source) = source {
+			if log.source != *filter_source {
+				continue;
+			}
+		}
 
-    if requests_to_replay.is_empty() {
-        println!("No requests found to replay");
-        return Ok(());
-    }
 
-    println!("Found {} requests to replay", requests_to_replay.len());
+		let request = HttpRequestBuilder {
+			method: log.request.method.clone(),
+			url: log.request.url.clone(),
+			headers: log.request.headers.clone(),
+			body: if log.request.body_preview.is_empty() {
+				None
+			} else {
+				Some(log.request.body_preview.clone())
+			},
+			timeout_seconds: 30,
+			follow_redirects: true,
+			verify_ssl: true,
+		};
 
-    // Replay each request `count` times
-    for (i, request) in requests_to_replay.iter().enumerate() {
-        println!("\n=== Replaying Request {} ===", i + 1);
-        println!("{} {}", request.method, request.url);
+		requests_to_replay.push(request);
+	}
 
-        for replay_num in 1..=count {
-            println!("Replay {}/{}", replay_num, count);
+	if requests_to_replay.is_empty() {
+		println!("No requests found to replay");
+		return Ok(());
+	}
 
-            match http_client.send_request(request.clone()).await {
-                Ok(response) => {
-                    println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
+	println!("Found {} requests to replay", requests_to_replay.len());
 
-                    // Log the replayed request (async operation)
-                    tokio::spawn({
-                        let logger = logger.clone();
-                        let request = request.clone();
-                        let response = response.clone();
 
-                        async move {
-                            if let Err(e) = logger.log_replay_request_response(&request, &response).await {
-                                error!("Failed to log replay: {}", e);
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    println!("❌ Error: {}", e);
-                }
-            }
+	for (i, request) in requests_to_replay.iter().enumerate() {
+		println!("\n=== Replaying Request {} ===", i + 1);
+		println!("{} {}", request.method, request.url);
 
-            // Add delay between replays
-            if replay_num < count && delay > 0 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-            }
-        }
+		for replay_num in 1..=count {
+			println!("Replay {}/{}", replay_num, count);
 
-        // Add delay between different requests
-        if i < requests_to_replay.len() - 1 && delay > 0 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay * 2)).await;
-        }
-    }
+			match http_client.send_request(request.clone()).await {
+				Ok(response) => {
+					println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
 
-    println!("\n✓ Replay completed!");
-    Ok(())
+
+					tokio::spawn({
+						let logger = logger.clone();
+						let request = request.clone();
+						let response = response.clone();
+
+						async move {
+							if let Err(e) = logger.log_replay_request_response(&request, &response).await {
+								error!("Failed to log replay: {}", e);
+							}
+						}
+					});
+				}
+				Err(e) => {
+					println!("❌ Error: {}", e);
+				}
+			}
+
+
+			if replay_num < count && delay > 0 {
+				tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+			}
+		}
+
+
+		if i < requests_to_replay.len() - 1 && delay > 0 {
+			tokio::time::sleep(tokio::time::Duration::from_millis(delay * 2)).await;
+		}
+	}
+
+	println!("\n✓ Replay completed!");
+	Ok(())
 }
 
 async fn analyze_performance(
-    url: String,
-    iterations: u32,
-    generate_report: bool,
-    http_client: Arc<HttpClient>,
+	url: String,
+	iterations: u32,
+	generate_report: bool,
+	http_client: Arc<HttpClient>,
 ) -> Result<()> {
-    use performance_analyzer::PerformanceAnalyzer;
+	use performance_analyzer::PerformanceAnalyzer;
 
-    println!("🔍 Starting performance analysis for: {}", url);
-    println!("📊 Running {} test iterations...\n", iterations);
+	println!("🔍 Starting performance analysis for: {}", url);
+	println!("📊 Running {} test iterations...\n", iterations);
 
-    let analyzer = PerformanceAnalyzer::new(http_client);
+	let analyzer = PerformanceAnalyzer::new(http_client);
 
-    // Run performance test
-    match analyzer.run_performance_test(&url, iterations).await {
-        Ok(analyses) => {
-            if analyses.is_empty() {
-                println!("❌ No successful requests completed");
-                return Ok(());
-            }
 
-            // Show individual results
-            for (i, analysis) in analyses.iter().enumerate() {
-                println!("=== Test {} Results ===", i + 1);
-                println!("Response Time: {}ms", analysis.metrics.total_time_ms);
-                println!("Status: HTTP {}",
-                    match analysis.severity {
-                        performance_analyzer::PerformanceSeverity::Excellent => "✅ Excellent",
-                        performance_analyzer::PerformanceSeverity::Good => "✅ Good",
-                        performance_analyzer::PerformanceSeverity::Average => "⚠️ Average",
-                        performance_analyzer::PerformanceSeverity::Poor => "⚠️ Poor",
-                        performance_analyzer::PerformanceSeverity::Critical => "❌ Critical",
-                    }
-                );
+	match analyzer.run_performance_test(&url, iterations).await {
+		Ok(analyses) => {
+			if analyses.is_empty() {
+				println!("❌ No successful requests completed");
+				return Ok(());
+			}
 
-                if analysis.metrics.total_time_ms > 6000 {
-                    println!("🚨 CRITICAL: Response time exceeded 6 seconds!");
-                }
-                println!();
-            }
 
-            // Generate summary report
-            let summary = analyzer.generate_summary_report(&analyses);
-            println!("{}", summary);
+			for (i, analysis) in analyses.iter().enumerate() {
+				println!("=== Test {} Results ===", i + 1);
+				println!("Response Time: {}ms", analysis.metrics.total_time_ms);
+				println!("Status: HTTP {}",
+					match analysis.severity {
+						performance_analyzer::PerformanceSeverity::Excellent => "✅ Excellent",
+						performance_analyzer::PerformanceSeverity::Good => "✅ Good",
+						performance_analyzer::PerformanceSeverity::Average => "⚠️ Average",
+						performance_analyzer::PerformanceSeverity::Poor => "⚠️ Poor",
+						performance_analyzer::PerformanceSeverity::Critical => "❌ Critical",
+					}
+				);
 
-            if generate_report {
-                // Save detailed report to file
-                let report_path = "performance_report.json";
-                match tokio::fs::write(
-                    report_path,
-                    serde_json::to_string_pretty(&analyses)?
-                ).await {
-                    Ok(_) => println!("📄 Detailed report saved to: {}", report_path),
-                    Err(e) => println!("⚠️ Failed to save report: {}", e),
-                }
-            }
+				if analysis.metrics.total_time_ms > 6000 {
+					println!("🚨 CRITICAL: Response time exceeded 6 seconds!");
+				}
+				println!();
+			}
 
-            // Provide specific analysis for 6000ms+ response times
-            let slow_requests: Vec<_> = analyses.iter()
-                .filter(|a| a.metrics.total_time_ms > 6000)
-                .collect();
 
-            if !slow_requests.is_empty() {
-                println!("\n🔍 ANALYSIS OF 6000ms+ RESPONSE TIMES:");
-                println!("Found {} requests with critical response times", slow_requests.len());
+			let summary = analyzer.generate_summary_report(&analyses);
+			println!("{}", summary);
 
-                for analysis in slow_requests {
-                    println!("\n{}", analysis.analysis);
-                    println!("Recommendations:");
-                    for rec in &analysis.recommendations {
-                        println!("• {}", rec);
-                    }
-                }
+			if generate_report {
 
-                println!("\n📋 COMMON FACTORS CAUSING 6000ms+ RESPONSE TIMES:");
-                println!("1. 🌐 Network Latency Issues:");
-                println!("   - High RTT (Round Trip Time) to target server");
-                println!("   - Geographic distance to server location");
-                println!("   - Network congestion or packet loss");
+				let report_path = "performance_report.json";
+				match tokio::fs::write(
+					report_path,
+					serde_json::to_string_pretty(&analyses)?
+				).await {
+					Ok(_) => println!("📄 Detailed report saved to: {}", report_path),
+					Err(e) => println!("⚠️ Failed to save report: {}", e),
+				}
+			}
 
-                println!("2. 🖥️ Server-Side Performance:");
-                println!("   - Server overload or high resource utilization");
-                println!("   - Slow database queries or backend processing");
-                println!("   - Insufficient server capacity");
 
-                println!("3. 🔗 Connection Issues:");
-                println!("   - DNS resolution delays");
-                println!("   - TCP connection establishment overhead");
-                println!("   - TLS handshake delays");
+			let slow_requests: Vec<_> = analyses.iter()
+				.filter(|a| a.metrics.total_time_ms > 6000)
+				.collect();
 
-                println!("4. 🚦 ISP or Infrastructure:");
-                println!("   - Internet Service Provider throttling");
-                println!("   - Routing inefficiencies");
-                println!("   - CDN or proxy server delays");
+			if !slow_requests.is_empty() {
+				println!("\n🔍 ANALYSIS OF 6000ms+ RESPONSE TIMES:");
+				println!("Found {} requests with critical response times", slow_requests.len());
 
-                println!("5. 📦 Data Transfer:");
-                println!("   - Large response payloads");
-                println!("   - Lack of compression (gzip/brotli)");
-                println!("   - Inefficient data serialization");
-            }
-        }
-        Err(e) => {
-            println!("❌ Performance analysis failed: {}", e);
-        }
-    }
+				for analysis in slow_requests {
+					println!("\n{}", analysis.analysis);
+					println!("Recommendations:");
+					for rec in &analysis.recommendations {
+						println!("• {}", rec);
+					}
+				}
 
-    Ok(())
+				println!("\n📋 COMMON FACTORS CAUSING 6000ms+ RESPONSE TIMES:");
+				println!("1. 🌐 Network Latency Issues:");
+				println!("   - High RTT (Round Trip Time) to target server");
+				println!("   - Geographic distance to server location");
+				println!("   - Network congestion or packet loss");
+
+				println!("2. 🖥️ Server-Side Performance:");
+				println!("   - Server overload or high resource utilization");
+				println!("   - Slow database queries or backend processing");
+				println!("   - Insufficient server capacity");
+
+				println!("3. 🔗 Connection Issues:");
+				println!("   - DNS resolution delays");
+				println!("   - TCP connection establishment overhead");
+				println!("   - TLS handshake delays");
+
+				println!("4. 🚦 ISP or Infrastructure:");
+				println!("   - Internet Service Provider throttling");
+				println!("   - Routing inefficiencies");
+				println!("   - CDN or proxy server delays");
+
+				println!("5. 📦 Data Transfer:");
+				println!("   - Large response payloads");
+				println!("   - Lack of compression (gzip/brotli)");
+				println!("   - Inefficient data serialization");
+			}
+		}
+		Err(e) => {
+			println!("❌ Performance analysis failed: {}", e);
+		}
+	}
+
+	Ok(())
 }
