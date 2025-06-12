@@ -88,23 +88,22 @@ impl CookieManager {
 			.filter_map(|entry| {
 				let cookie = entry.value();
 
+				let domain_match = domain == cookie.domain ||
+					(cookie.domain.starts_with(".") && domain.ends_with(&cookie.domain[1..]));
 
-				if !domain.ends_with(&cookie.domain) && !cookie.domain.ends_with(domain) {
+				if !domain_match {
 					return None;
 				}
-
 
 				if !path.starts_with(&cookie.path) {
 					return None;
 				}
-
 
 				if let Some(expires) = cookie.expires {
 					if now > expires {
 						return None;
 					}
 				}
-
 
 				if cookie.secure && !is_secure {
 					return None;

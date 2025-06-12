@@ -77,7 +77,7 @@ Riddler proxy -a 127.0.0.1 -p 8080
 
 # 配置浏览器使用代理: 127.0.0.1:8080
 # 然后查看拦截的流量
-Riddler logs -s monitord
+Riddler logs -s monitored
 ```
 
 ### 📦 网络监听 (需要sudo)

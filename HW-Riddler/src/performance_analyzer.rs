@@ -58,11 +58,9 @@ impl PerformanceAnalyzer {
 
 		let overall_start = Instant::now();
 
-
 		let response = self.http_client.send_request(request.clone()).await?;
 
 		let total_time = overall_start.elapsed().as_millis() as u64;
-
 
 		let metrics = self.build_metrics(&response, total_time);
 		let analysis = self.generate_analysis(&metrics, &response);
@@ -81,49 +79,50 @@ impl PerformanceAnalyzer {
 	fn build_metrics(&self, response: &HttpResponseInfo, total_time: u64) -> PerformanceMetrics {
 		let response_size = response.body.len();
 
-
-		let estimated_bandwidth = if total_time > 0 {
-			let bytes_per_second = (response_size as f64 * 1000.0) / total_time as f64;
-			Some((bytes_per_second * 8.0) / 1_000_000.0)
+		let estimated_bandwidth = if total_time > 0 && response_size > 0 {
+			Some((response_size as f64 * 8.0) / (total_time as f64 / 1000.0) / 1_000_000.0)
 		} else {
 			None
 		};
 
-
 		let mut latency_factors = Vec::new();
 		let mut bottlenecks = Vec::new();
 
-		if total_time > 6000 {
-			latency_factors.push("Extremely high response time detected".to_string());
-			bottlenecks.push("Network congestion or server overload".to_string());
-		}
-
-		if total_time > 3000 {
-			latency_factors.push("High latency connection".to_string());
-			bottlenecks.push("Slow server processing or network issues".to_string());
+		match total_time {
+			0..=500 => {},
+			501..=1500 => {
+				latency_factors.push("Moderate latency detected".to_string());
+			},
+			1501..=3000 => {
+				latency_factors.push("High latency connection".to_string());
+				bottlenecks.push("Server processing or network issues".to_string());
+			},
+			_ => {
+				latency_factors.push("Very high response time".to_string());
+				bottlenecks.push("Server overload or severe network issues".to_string());
+			}
 		}
 
 		if response_size > 1_000_000 {
 			latency_factors.push("Large response payload".to_string());
-			bottlenecks.push("Data transfer time".to_string());
 		}
 
+		let (dns_time, tcp_time, tls_time) = estimate_connection_times(total_time, response.final_url.starts_with("https"));
 
-		if !response.headers.contains_key("cache-control") {
-			latency_factors.push("No cache headers".to_string());
-		}
-
-		if response.headers.get("server").map_or(false, |s| s.contains("nginx")) {
-			latency_factors.push("Nginx server detected".to_string());
-		}
+		let first_byte_time = if total_time > 0 {
+			total_time / 3
+		} else {
+			0
+		};
+		let download_time = total_time.saturating_sub(first_byte_time);
 
 		PerformanceMetrics {
-			dns_resolution_ms: None,
-			tcp_connect_ms: None,
-			tls_handshake_ms: None,
-			request_send_ms: 0,
-			first_byte_ms: total_time / 3,
-			response_download_ms: total_time * 2 / 3,
+			dns_resolution_ms: dns_time,
+			tcp_connect_ms: tcp_time,
+			tls_handshake_ms: tls_time,
+			request_send_ms: total_time.min(50),
+			first_byte_ms: first_byte_time,
+			response_download_ms: download_time,
 			total_time_ms: total_time,
 			response_size_bytes: response_size,
 			network_conditions: NetworkConditions {
@@ -254,7 +253,6 @@ impl PerformanceAnalyzer {
 				}
 			}
 
-
 			if i < iterations {
 				tokio::time::sleep(Duration::from_millis(100)).await;
 			}
@@ -283,7 +281,6 @@ impl PerformanceAnalyzer {
 		report.push_str(&format!("Average Response Time: {}ms\n", avg_time));
 		report.push_str(&format!("Minimum Response Time: {}ms\n", min_time));
 		report.push_str(&format!("Maximum Response Time: {}ms\n", max_time));
-
 
 		let excellent = analyses.iter().filter(|a| matches!(a.severity, PerformanceSeverity::Excellent)).count();
 		let good = analyses.iter().filter(|a| matches!(a.severity, PerformanceSeverity::Good)).count();
@@ -315,4 +312,16 @@ impl PerformanceAnalyzer {
 
 		report
 	}
+}
+
+fn estimate_connection_times(total_time: u64, is_https: bool) -> (Option<u64>, Option<u64>, Option<u64>) {
+	if total_time == 0 {
+		return (None, None, None);
+	}
+
+	let dns_time = Some(total_time.min(100) / 2);
+	let tcp_time = Some(total_time.min(200) / 4);
+	let tls_time = if is_https { Some(total_time.min(300) / 3) } else { None };
+
+	(dns_time, tcp_time, tls_time)
 }

@@ -16,6 +16,12 @@ HW-Riddler is a powerful network analysis tool that provides:
 pub struct Cli {
 	#[command(subcommand)]
 	pub command: Commands,
+
+	#[arg(long, help = "Set log level (error, warn, info, debug, trace)", default_value = "info")]
+	pub log_level: Option<String>,
+
+	#[arg(long, help = "Show verbose network traffic (all packets)")]
+	pub verbose_network: bool,
 }
 
 #[derive(Subcommand)]
@@ -80,6 +86,9 @@ pub enum Commands {
 
 		#[arg(long, help = "Show detailed statistics about requests")]
 		stats: bool,
+
+		#[arg(short = 'p', long, help = "Specify custom log file path (overrides config setting)")]
+		path: Option<String>,
 	},
 
 	#[clap(long_about = "Replay HTTP requests from the request log with customizable repetition and timing. \
@@ -155,15 +164,14 @@ pub enum CookieAction {
 }
 
 pub fn parse_headers(header_strings: Vec<String>) -> HashMap<String, String> {
-	let mut headers = HashMap::new();
-
-	for header in header_strings {
-		if let Some(colon_pos) = header.find(':') {
-			let key = header[..colon_pos].trim().to_string();
-			let value = header[colon_pos + 1..].trim().to_string();
-			headers.insert(key, value);
-		}
-	}
-
-	headers
+	header_strings.into_iter()
+		.filter_map(|header| {
+			let parts: Vec<&str> = header.splitn(2, ':').collect();
+			if parts.len() == 2 {
+				Some((parts[0].trim().to_string(), parts[1].trim().to_string()))
+			} else {
+				None
+			}
+		})
+		.collect()
 }

@@ -25,7 +25,7 @@
 
 #### ✅ 4. 请求日志系统
 - JSON 格式结构化存储
-- 来源标记 (monitord/manual/replay)
+- 来源标记 (monitored/manual/replay)
 - 强大的搜索和过滤功能
 - 详细的统计信息生成
 

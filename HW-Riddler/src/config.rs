@@ -31,9 +31,18 @@ pub struct StorageConfig {
 
 impl Default for Config {
 	fn default() -> Self {
+		let default_interface = match std::env::consts::OS {
+			"macos" => "en0",
+			"linux" => "eth0",
+			"windows" => {
+				"<请用--interface参数指定网络接口>"
+			},
+			_ => "en0",
+		}.to_string();
+
 		Self {
 			network: NetworkConfig {
-				interface: "en0".to_string(),
+				interface: default_interface,
 				monitor_filter: "tcp port 80 or tcp port 443".to_string(),
 				buffer_size: 65536,
 			},
@@ -49,4 +58,31 @@ impl Default for Config {
 			},
 		}
 	}
+}
+
+pub fn list_available_interfaces() -> Vec<String> {
+	match pcap::Device::list() {
+		Ok(devices) => devices.into_iter().map(|d| d.name).collect(),
+		Err(_) => Vec::new(),
+	}
+}
+
+pub fn interface_exists(interface: &str) -> bool {
+	match pcap::Device::list() {
+		Ok(devices) => devices.iter().any(|d| d.name == interface),
+		Err(_) => false,
+	}
+}
+
+pub fn validate_bpf_filter(filter: &str) -> bool {
+	if let Ok(devices) = pcap::Device::list() {
+		if let Some(device) = devices.first() {
+			if let Ok(cap_result) = pcap::Capture::from_device(device.clone()) {
+				if let Ok(mut cap) = cap_result.open() {
+					return cap.filter(filter, true).is_ok();
+				}
+			}
+		}
+	}
+	true
 }

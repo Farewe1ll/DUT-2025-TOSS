@@ -29,7 +29,7 @@ pub struct HttpRequestInfo {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct RequestStats {
 	pub total_requests: usize,
-	pub monitord_requests: usize,
+	pub monitored_requests: usize,
 	pub manual_requests: usize,
 	pub replay_requests: usize,
 	pub successful_requests: usize,
@@ -60,10 +60,17 @@ impl From<&HttpRequest> for HttpRequestInfo {
 
 pub struct RequestLogger {
 	log_file: Arc<Mutex<tokio::fs::File>>,
+	log_file_path: String,
 }
 
 impl RequestLogger {
 	pub async fn new(log_file_path: &str) -> Result<Self> {
+		if let Some(parent) = std::path::Path::new(log_file_path).parent() {
+			if !parent.exists() {
+				tokio::fs::create_dir_all(parent).await?;
+			}
+		}
+
 		let file = OpenOptions::new()
 			.create(true)
 			.append(true)
@@ -72,7 +79,18 @@ impl RequestLogger {
 
 		Ok(Self {
 			log_file: Arc::new(Mutex::new(file)),
+			log_file_path: log_file_path.to_string(),
 		})
+	}
+
+	async fn log_entry<T: Serialize>(&self, entry: &T) -> Result<()> {
+		let log_line = format!("{}\n", serde_json::to_string(entry)?);
+
+		let mut file = self.log_file.lock().await;
+		file.write_all(log_line.as_bytes()).await?;
+		file.flush().await?;
+
+		Ok(())
 	}
 
 	pub async fn log_request(&self, request: &HttpRequest, source: &str) -> Result<()> {
@@ -83,7 +101,7 @@ impl RequestLogger {
 			source: source.to_string(),
 		};
 
-		self.write_log_entry(&entry).await
+		self.log_entry(&entry).await
 	}
 
 	pub async fn log_request_response(
@@ -99,7 +117,7 @@ impl RequestLogger {
 			source: source.to_string(),
 		};
 
-		self.write_log_entry(&entry).await
+		self.log_entry(&entry).await
 	}
 
 	pub async fn log_manual_request_response(
@@ -182,13 +200,34 @@ impl RequestLogger {
 	}
 
 	pub async fn read_recent_logs(&self, limit: usize) -> Result<Vec<RequestLogEntry>> {
-		let content = tokio::fs::read_to_string("./requests.log").await?;
-		let lines: Vec<&str> = content.lines().collect();
+		let _file_guard = self.log_file.lock().await;
 
-		let mut entries = Vec::new();
+		if !tokio::fs::metadata(&self.log_file_path).await.is_ok() {
+			return Ok(Vec::new());
+		}
+
+		let content = match tokio::fs::read_to_string(&self.log_file_path).await {
+			Ok(content) => content,
+			Err(e) => {
+				error!("无法读取日志文件 {}: {}", self.log_file_path, e);
+				return Ok(Vec::new());
+			}
+		};
+
+		if content.is_empty() {
+			return Ok(Vec::new());
+		}
+
+		let lines: Vec<&str> = content.lines().collect();
+		let mut entries = Vec::with_capacity(limit);
+
 		for line in lines.iter().rev().take(limit) {
-			if let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) {
-				entries.push(entry);
+			match serde_json::from_str::<RequestLogEntry>(line) {
+				Ok(entry) => entries.push(entry),
+				Err(e) => {
+					error!("跳过无法解析的日志条目: {}", e);
+					continue;
+				}
 			}
 		}
 
@@ -197,7 +236,9 @@ impl RequestLogger {
 	}
 
 	pub async fn search_logs(&self, query: &str, limit: usize) -> Result<Vec<RequestLogEntry>> {
-		let content = tokio::fs::read_to_string("./requests.log").await?;
+		let _file_guard = self.log_file.lock().await;
+
+		let content = tokio::fs::read_to_string(&self.log_file_path).await?;
 		let lines: Vec<&str> = content.lines().collect();
 
 		let mut matching_entries = Vec::new();
@@ -224,7 +265,7 @@ impl RequestLogger {
 	}
 
 	pub async fn get_request_stats(&self) -> Result<RequestStats> {
-		let content = tokio::fs::read_to_string("./requests.log").await?;
+		let content = tokio::fs::read_to_string(&self.log_file_path).await?;
 		let lines: Vec<&str> = content.lines().collect();
 
 		let mut stats = RequestStats::default();
@@ -234,7 +275,7 @@ impl RequestLogger {
 				stats.total_requests += 1;
 
 				match entry.source.as_str() {
-					"monitord" => stats.monitord_requests += 1,
+					"monitored" => stats.monitored_requests += 1,
 					"manual" => stats.manual_requests += 1,
 					"replay" => stats.replay_requests += 1,
 					_ => {}

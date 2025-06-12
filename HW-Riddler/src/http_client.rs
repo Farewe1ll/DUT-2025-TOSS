@@ -53,9 +53,7 @@ impl HttpClient {
 	pub async fn send_request(&self, request: HttpRequestBuilder) -> Result<HttpResponseInfo> {
 		let start_time = std::time::Instant::now();
 
-
 		let url = Url::parse(&request.url)?;
-
 
 		let method = match request.method.to_uppercase().as_str() {
 			"GET" => Method::GET,
@@ -68,7 +66,6 @@ impl HttpClient {
 			_ => Method::GET,
 		};
 
-
 		let mut headers = HeaderMap::new();
 		for (key, value) in &request.headers {
 			if let (Ok(header_name), Ok(header_value)) = (
@@ -79,7 +76,6 @@ impl HttpClient {
 			}
 		}
 
-
 		let cookies = self.cookie_manager.get_cookies_for_url(&url);
 		if !cookies.is_empty() {
 			let cookie_header = cookies.join("; ");
@@ -88,19 +84,16 @@ impl HttpClient {
 			}
 		}
 
-
 		let mut req_builder = self
 			.client
 			.request(method, url.clone())
 			.headers(headers)
 			.timeout(Duration::from_secs(request.timeout_seconds));
 
-
 		if let Some(body) = &request.body {
 			req_builder = req_builder.body(body.clone());
 		}
 		info!("Sending {} request to {}", request.method, request.url);
-
 
 		let response = tokio::time::timeout(
 			Duration::from_secs(request.timeout_seconds.max(5)),
@@ -110,7 +103,6 @@ impl HttpClient {
 		let final_url = response.url().to_string();
 		let status = response.status().as_u16();
 
-
 		let mut response_headers = HashMap::new();
 		for (key, value) in response.headers() {
 			if let Ok(value_str) = value.to_str() {
@@ -118,19 +110,16 @@ impl HttpClient {
 			}
 		}
 
-
 		let mut response_cookies = Vec::new();
 		for cookie_header in response.headers().get_all(reqwest::header::SET_COOKIE) {
 			if let Ok(cookie_str) = cookie_header.to_str() {
 				response_cookies.push(cookie_str.to_string());
-
 
 				if let Err(e) = self.cookie_manager.add_cookie(&url, cookie_str) {
 					error!("Failed to store cookie: {}", e);
 				}
 			}
 		}
-
 
 		let body = tokio::time::timeout(
 			Duration::from_secs(30),
@@ -156,17 +145,17 @@ impl HttpClient {
 		})
 	}
 
-	pub async fn replay_request(&self, monitord_request: &crate::network::HttpRequest) -> Result<HttpResponseInfo> {
-		let body = if monitord_request.body.is_empty() {
+	pub async fn replay_request(&self, monitored_request: &crate::network::HttpRequest) -> Result<HttpResponseInfo> {
+		let body = if monitored_request.body.is_empty() {
 			None
 		} else {
-			Some(String::from_utf8_lossy(&monitord_request.body).to_string())
+			Some(String::from_utf8_lossy(&monitored_request.body).to_string())
 		};
 
 		self.send_request(HttpRequestBuilder {
-			method: monitord_request.method.clone(),
-			url: monitord_request.url.clone(),
-			headers: monitord_request.headers.clone(),
+			method: monitored_request.method.clone(),
+			url: monitored_request.url.clone(),
+			headers: monitored_request.headers.clone(),
 			body,
 			timeout_seconds: 30,
 			follow_redirects: true,

@@ -16,14 +16,33 @@ use logger::RequestLogger;
 use network::{HttpParser, PacketMonitor};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, trace, warn};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-
-	tracing_subscriber::fmt::init();
-
 	let cli = Cli::parse();
+
+	let log_level = cli.log_level.unwrap_or_else(|| "info".to_string());
+
+	let env_filter = match EnvFilter::try_from_default_env() {
+		Ok(filter) => filter,
+		Err(_) => {
+			EnvFilter::new(&log_level)
+		}
+	};
+
+	fmt()
+		.with_env_filter(env_filter)
+		.with_level(true)
+		.with_target(true)
+		.pretty()
+		.init();
+
+	println!("Riddler 正在启动，日志级别: {}", log_level);
+	info!("Starting Riddler with log level: {}", log_level);
+	debug!("Debug logging enabled");
+
 	let config = Config::default();
 
 
@@ -49,8 +68,15 @@ async fn main() -> Result<()> {
 			handle_cookie_command(action, cookie_manager.clone()).await?;
 		}
 
-		Commands::Logs { limit, source, query, stats } => {
-			show_logs(limit, source, query, stats, logger.clone()).await?;
+		Commands::Logs { limit, source, query, stats, path } => {
+			if let Some(ref custom_path) = path {
+				println!("使用自定义日志文件: {}", custom_path);
+				let custom_logger = Arc::new(RequestLogger::new(custom_path).await?);
+				show_logs(limit, source, query, stats, custom_logger).await?;
+			} else {
+				println!("使用默认日志文件: {}", config.storage.request_log_path);
+				show_logs(limit, source, query, stats, logger.clone()).await?;
+			}
 		}
 
 		Commands::Replay { limit, source, count, delay } => {
@@ -82,13 +108,71 @@ async fn start_monitor(
 	http_client: Arc<HttpClient>,
 	logger: Arc<RequestLogger>,
 ) -> Result<()> {
+	if interface.starts_with("<请用") {
+		eprintln!("错误: 未指定网络接口。请使用--interface参数指定有效的网络接口。");
+		println!("可用网络接口列表:");
+
+		for (i, device) in config::list_available_interfaces().iter().enumerate() {
+			println!("  {}: {}", i+1, device);
+		}
+
+		return Err(anyhow::anyhow!("未指定有效网络接口"));
+	}
+
 	info!("Starting network monitor on {} with filter: {}", interface, filter);
+	debug!("Initializing packet monitor with detailed logging");
+
+	#[cfg(unix)]
+	{
+		if !cfg!(target_os = "macos") && unsafe { libc::geteuid() } != 0 {
+			eprintln!("\n⚠️  警告: 在 Linux 上监控网络通常需要 root 权限！");
+			eprintln!("请使用 sudo 运行此命令。\n");
+		}
+	}
+
+	#[cfg(target_os = "windows")]
+	if interface == "en0" {
+		println!("注意: 在Windows上默认使用'en0'接口名称可能无效。建议使用--interface参数指定正确的接口名称。");
+		println!("常见Windows网络接口名称通常是UUID格式，例如'\\Device\\NPF_{GUID}'");
+		println!("请运行 'riddler monitor --help' 获取更多信息");
+	}
+
+	#[cfg(target_os = "linux")]
+	if interface == "en0" {
+		println!("注意: 在Linux上默认使用'en0'接口名称可能无效。建议使用--interface参数指定正确的接口名称。");
+		println!("常见Linux网络接口名称: 'eth0', 'wlan0', 'ens33' 等。");
+		println!("可以通过'ip link'命令查看系统上的可用接口");
+	}
 
 	let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
-	let monitor = Arc::new(PacketMonitor::new(interface, filter, packet_tx));
+	let monitor = Arc::new(PacketMonitor::new(interface.clone(), filter.clone(), packet_tx));
 
+	info!("Network monitor created, starting monitor...");
 
-	let monitor_handle = monitor.start_monitor().await?;
+	if !config::interface_exists(&interface) {
+		eprintln!("错误: 指定的网络接口 '{}' 不存在", interface);
+		println!("可用网络接口列表:");
+		for (i, device) in config::list_available_interfaces().iter().enumerate() {
+			println!("  {}: {}", i+1, device);
+		}
+		return Err(anyhow::anyhow!("指定的网络接口不存在"));
+	}
+
+	if !config::validate_bpf_filter(&filter) {
+		return Err(anyhow::anyhow!("无效的 BPF 过滤器语法: {}", filter));
+	}
+
+	let monitor_handle = match monitor.start_monitor().await {
+		Ok(handle) => handle,
+		Err(e) => {
+			eprintln!("启动网络监控失败: {}", e);
+			eprintln!("请检查:");
+			eprintln!("  1. 是否以 root/管理员权限运行");
+			eprintln!("  2. 指定的网络接口 '{}' 是否正确", interface);
+			eprintln!("  3. 过滤器表达式 '{}' 是否有效", filter);
+			return Err(e);
+		}
+	};
 
 	println!("Packet monitor started.");
 	println!("Ctrl + C then 'q' and Enter to quit");
@@ -189,10 +273,18 @@ async fn start_monitor(
 		});
 	}
 
+
+	let _http_parser = network::HttpParser::new();
+	let _http_request_count = 0;
+	let mut _http_payload_packets = 0;
 	let mut packet_count = 0;
 	let mut exit_reason = "unknown";
 
+	info!("HTTP监控已启动，等待捕获HTTP请求...");
+	info!("如果没有看到任何网络包被捕获，请尝试生成一些HTTP流量 (例如访问 http://example.com)");
 
+	println!("监控已启动。开始监听网络流量，日志将显示在这里...");
+	debug!("Main loop starting, waiting for packets...");
 	loop {
 
 		match shutdown_rx.try_recv() {
@@ -229,6 +321,9 @@ async fn start_monitor(
 					packet_count += 1;
 					batch_processed += 1;
 
+					debug!("Received packet #{} from {}:{}",
+						packet_count, packet.src_ip, packet.src_port);
+
 					if let Some(http_request) = HttpParser::parse_http_request(&packet) {
 						info!("Monitored HTTP request #{}: {} {}", packet_count, http_request.method, http_request.url);
 
@@ -253,6 +348,8 @@ async fn start_monitor(
 								}
 							}
 						}
+					} else {
+						trace!("Packet #{} did not contain valid HTTP request", packet_count);
 					}
 				}
 				Err(mpsc::error::TryRecvError::Empty) => {
@@ -276,8 +373,6 @@ async fn start_monitor(
 
 
 
-
-
 		tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 	}
 
@@ -291,7 +386,8 @@ async fn start_monitor(
 		}
 	}
 
-	info!("Monitord {} packets total", packet_count);
+	info!("Monitored {} packets", packet_count);
+	info!("Monitored {} packets total", packet_count);
 
 
 	if exit_reason == "shutdown_signal" {
@@ -416,7 +512,7 @@ async fn show_logs(
 		println!("=== Request Statistics ===");
 		println!("Total Requests: {}", stats.total_requests);
 		println!("Monitored: {}, Manual: {}, Replay: {}",
-				stats.monitord_requests, stats.manual_requests, stats.replay_requests);
+				stats.monitored_requests, stats.manual_requests, stats.replay_requests);
 		println!("Successful: {}, Failed: {}", stats.successful_requests, stats.failed_requests);
 		println!("Average Response Time: {}ms", stats.average_response_time);
 
