@@ -300,16 +300,6 @@ impl PerformanceAnalyzer {
 			report.push_str("Some requests exceeded 6 seconds response time.\n");
 		}
 
-		report.push_str("\nKey Factors Contributing to 6000ms Response Times:\n");
-		report.push_str("1. Network Latency - High RTT to target server\n");
-		report.push_str("2. Server Processing Time - Slow backend processing\n");
-		report.push_str("3. DNS Resolution Delays - Slow DNS lookups\n");
-		report.push_str("4. Connection Establishment - TCP/TLS handshake overhead\n");
-		report.push_str("5. Network Congestion - Bandwidth limitations\n");
-		report.push_str("6. Server Load - High server resource utilization\n");
-		report.push_str("7. Geographic Distance - Physical distance to server\n");
-		report.push_str("8. ISP Throttling - Provider-level bandwidth limits\n");
-
 		report
 	}
 }

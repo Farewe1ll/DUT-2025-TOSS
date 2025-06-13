@@ -370,17 +370,13 @@ impl HttpParser {
 		}
 
 		for &method in &HTTP_METHODS {
-			// 先检查method长度，防止后续越界
 			if data.len() >= method.len() {
-				// 检查是否以HTTP方法开头
 				if &data[0..method.len()] == method {
 					return true;
 				}
 
-				// 在小数据包中搜索HTTP方法
 				if data.len() <= 64 {
 					for i in 0..data.len().saturating_sub(method.len()).saturating_add(1) {
-						// 确保i+method.len()不会超出数据范围
 						if i + method.len() <= data.len() && &data[i..i+method.len()] == method {
 							return true;
 						}

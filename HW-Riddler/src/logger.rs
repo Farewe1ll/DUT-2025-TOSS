@@ -65,17 +65,24 @@ pub struct RequestLogger {
 
 impl RequestLogger {
 	pub async fn new(log_file_path: &str) -> Result<Self> {
-		if let Some(parent) = std::path::Path::new(log_file_path).parent() {
+		let path = std::path::Path::new(log_file_path);
+
+		// 确保日志目录存在
+		if let Some(parent) = path.parent() {
 			if !parent.exists() {
-				tokio::fs::create_dir_all(parent).await?;
+				tokio::fs::create_dir_all(parent)
+					.await
+					.map_err(|e| anyhow::anyhow!("Failed to create log directory: {}", e))?;
 			}
 		}
 
+		// 检查日志文件是否可写
 		let file = OpenOptions::new()
 			.create(true)
 			.append(true)
 			.open(log_file_path)
-			.await?;
+			.await
+			.map_err(|e| anyhow::anyhow!("Cannot open log file (permission issue?): {}", e))?;
 
 		Ok(Self {
 			log_file: Arc::new(Mutex::new(file)),
@@ -182,18 +189,25 @@ impl RequestLogger {
 	}
 
 	async fn write_log_entry(&self, entry: &RequestLogEntry) -> Result<()> {
-		let log_line = format!("{}\n", serde_json::to_string(entry)?);
+		let log_line = match serde_json::to_string(entry) {
+			Ok(s) => format!("{}\n", s),
+			Err(e) => return Err(anyhow::anyhow!("Failed to serialize log entry: {}", e)),
+		};
 
-		match self.log_file.lock().await.write_all(log_line.as_bytes()).await {
-			Ok(_) => {
-				if let Err(e) = self.log_file.lock().await.flush().await {
-					error!("Failed to flush log file: {}", e);
-				}
-			}
+		let mut file = match self.log_file.lock().await {
+			f => f,
+		};
+
+		match file.write_all(log_line.as_bytes()).await {
+			Ok(_) => {}
 			Err(e) => {
-				error!("Failed to write to log file: {}", e);
-				return Err(e.into());
+				error!("Failed to write to log file: {} ({})", e, std::io::Error::last_os_error());
+				return Err(anyhow::anyhow!("Failed to write to log file: {}", e));
 			}
+		}
+
+		if let Err(e) = file.flush().await {
+			error!("Failed to flush log file: {} ({})", e, std::io::Error::last_os_error());
 		}
 
 		Ok(())
@@ -250,11 +264,11 @@ impl RequestLogger {
 			}
 
 			if let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) {
-
-				if entry.request.url.to_lowercase().contains(&query_lower) ||
-				entry.request.method.to_lowercase().contains(&query_lower) ||
-				entry.request.body_preview.to_lowercase().contains(&query_lower) ||
-				entry.request.headers.values().any(|v| v.to_lowercase().contains(&query_lower)) {
+				if entry.request.url.to_lowercase().contains(&query_lower)
+					|| entry.request.method.to_lowercase().contains(&query_lower)
+					|| entry.request.body_preview.to_lowercase().contains(&query_lower)
+					|| entry.request.headers.values().any(|v| v.to_lowercase().contains(&query_lower))
+				{
 					matching_entries.push(entry);
 				}
 			}

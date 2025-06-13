@@ -431,27 +431,15 @@ async fn send_manual_request(
 			println!("{}", response.body);
 			println!("⏱️  Response Time: {}ms", response.response_time_ms);
 
-
-			tokio::spawn({
-				let logger = logger.clone();
-				let method = method.clone();
-				let url = url.clone();
-				let parsed_headers = parsed_headers.clone();
-				let body = body.clone().unwrap_or_default();
-				let response = response.clone();
-
-				async move {
-					if let Err(e) = logger.log_manual_request_response(
-						&method,
-						&url,
-						parsed_headers,
-						&body,
-						&response,
-					).await {
-						error!("Failed to log manual request: {}", e);
-					}
-				}
-			});
+			if let Err(e) = logger.log_manual_request_response(
+				&method,
+				&url,
+				parsed_headers,
+				&body.clone().unwrap_or_default(),
+				&response,
+			).await {
+				error!("Failed to log manual request: {}", e);
+			}
 
 			println!("✅ Request completed successfully!");
 		}
@@ -716,17 +704,10 @@ async fn replay_requests(
 					println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
 
 
-					tokio::spawn({
-						let logger = logger.clone();
-						let request = request.clone();
-						let response = response.clone();
-
-						async move {
-							if let Err(e) = logger.log_replay_request_response(&request, &response).await {
-								error!("Failed to log replay: {}", e);
-							}
-						}
-					});
+					// 直接在主流程中记录日志，不使用tokio::spawn
+					if let Err(e) = logger.log_replay_request_response(&request, &response).await {
+						error!("Failed to log replay: {}", e);
+					}
 				}
 				Err(e) => {
 					println!("❌ Error: {}", e);

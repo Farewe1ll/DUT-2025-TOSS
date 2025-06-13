@@ -120,7 +120,6 @@ pub enum Commands {
 	},
 
 	#[clap(long_about = "Comprehensive performance analysis tool for HTTP requests with intelligent diagnostics. \
-						Specializes in identifying 6000ms+ response time issues through multi-iteration testing. \
 						Provides detailed bottleneck analysis, performance classification, and optimization recommendations. \
 						Generates both console output and optional JSON reports.")]
 	Analyze {
