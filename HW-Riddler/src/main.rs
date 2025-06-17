@@ -15,6 +15,7 @@ use http_client::{HttpClient, HttpRequestBuilder};
 use logger::RequestLogger;
 use network::{HttpParser, PacketMonitor};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -79,8 +80,8 @@ async fn main() -> Result<()> {
 			}
 		}
 
-		Commands::Replay { limit, source, count, delay } => {
-			replay_requests(limit, source, count, delay, http_client.clone(), logger.clone()).await?;
+		Commands::Replay { limit, source, count, delay, mode } => {
+			replay_requests(limit, source, count, delay, mode, http_client.clone(), logger.clone()).await?;
 		}
 
 		Commands::Proxy { address, port } => {
@@ -649,10 +650,11 @@ async fn replay_requests(
 	source: Option<String>,
 	count: usize,
 	delay: u64,
+	mode: cli::ReplayMode,
 	http_client: Arc<HttpClient>,
 	logger: Arc<RequestLogger>,
 ) -> Result<()> {
-	info!("Starting request replay - limit: {}, count: {}, delay: {}ms", limit, count, delay);
+	info!("Starting request replay - limit: {}, count: {}, delay: {}ms, mode: {:?}", limit, count, delay, mode);
 
 
 	let logs = logger.read_recent_logs(limit).await?;
@@ -691,38 +693,71 @@ async fn replay_requests(
 
 	println!("Found {} requests to replay", requests_to_replay.len());
 
+	match mode {
+		cli::ReplayMode::Sequential => {
+			// 依次放出每个请求n次 (A1->A2->B1->B2)
+			for (i, request) in requests_to_replay.iter().enumerate() {
+				println!("\n=== Replaying Request {} ===", i + 1);
+				println!("{} {}", request.method, request.url);
 
-	for (i, request) in requests_to_replay.iter().enumerate() {
-		println!("\n=== Replaying Request {} ===", i + 1);
-		println!("{} {}", request.method, request.url);
+				for replay_num in 1..=count {
+					println!("Replay {}/{}", replay_num, count);
 
-		for replay_num in 1..=count {
-			println!("Replay {}/{}", replay_num, count);
+					match http_client.send_request(request.clone()).await {
+						Ok(response) => {
+							println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
 
-			match http_client.send_request(request.clone()).await {
-				Ok(response) => {
-					println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
+							if let Err(e) = logger.log_replay_request_response(&request, &response).await {
+								error!("Failed to log replay: {}", e);
+							}
+						}
+						Err(e) => {
+							println!("❌ Error: {}", e);
+						}
+					}
 
-
-					// 直接在主流程中记录日志，不使用tokio::spawn
-					if let Err(e) = logger.log_replay_request_response(&request, &response).await {
-						error!("Failed to log replay: {}", e);
+					if replay_num < count && delay > 0 {
+						tokio::time::sleep(Duration::from_millis(delay)).await;
 					}
 				}
-				Err(e) => {
-					println!("❌ Error: {}", e);
+
+				if i < requests_to_replay.len() - 1 && delay > 0 {
+					tokio::time::sleep(Duration::from_millis(delay * 2)).await;
 				}
 			}
+		},
+		cli::ReplayMode::Interleaved => {
+			// 按顺序轮流放出请求n次 (A1->B1->A2->B2)
+			println!("\n=== Replaying Requests in Interleaved Mode ===");
 
+			for replay_num in 1..=count {
+				println!("\n--- Replay Round {}/{} ---", replay_num, count);
 
-			if replay_num < count && delay > 0 {
-				tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+				for (i, request) in requests_to_replay.iter().enumerate() {
+					println!("Request {}: {} {}", i + 1, request.method, request.url);
+
+					match http_client.send_request(request.clone()).await {
+						Ok(response) => {
+							println!("✅ Response: {} ({}ms)", response.status, response.response_time_ms);
+
+							if let Err(e) = logger.log_replay_request_response(&request, &response).await {
+								error!("Failed to log replay: {}", e);
+							}
+						}
+						Err(e) => {
+							println!("❌ Error: {}", e);
+						}
+					}
+
+					if i < requests_to_replay.len() - 1 && delay > 0 {
+						tokio::time::sleep(Duration::from_millis(delay)).await;
+					}
+				}
+
+				if replay_num < count && delay > 0 {
+					tokio::time::sleep(Duration::from_millis(delay * 2)).await;
+				}
 			}
-		}
-
-
-		if i < requests_to_replay.len() - 1 && delay > 0 {
-			tokio::time::sleep(tokio::time::Duration::from_millis(delay * 2)).await;
 		}
 	}
 

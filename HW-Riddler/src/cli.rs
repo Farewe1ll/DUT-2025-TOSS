@@ -106,6 +106,9 @@ pub enum Commands {
 
 		#[arg(short, long, default_value = "100", help = "Delay between replays (ms)")]
 		delay: u64,
+
+		#[arg(short, long, default_value = "sequential", value_enum, help = "Replay mode: 'sequential' (A1->A2->B1->B2) or 'interleaved' (A1->B1->A1->B2)")]
+		mode: ReplayMode,
 	},
 
 	#[clap(long_about = "Launch an HTTP/HTTPS proxy server that intercepts and logs traffic. \
@@ -160,6 +163,14 @@ pub enum CookieAction {
 	#[clap(long_about = "Remove all cookies from the persistent storage. \
 						This action cannot be undone - use with caution.")]
 	Clear,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum ReplayMode {
+    /// 依次放出每个请求n次 (A1->A2->B1->B2)
+    Sequential,
+    /// 按顺序轮流放出请求n次 (A1->B1->A1->B2)
+    Interleaved,
 }
 
 pub fn parse_headers(header_strings: Vec<String>) -> HashMap<String, String> {
