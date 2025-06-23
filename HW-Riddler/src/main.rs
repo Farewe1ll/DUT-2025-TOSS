@@ -695,7 +695,6 @@ async fn replay_requests(
 
 	match mode {
 		cli::ReplayMode::Sequential => {
-			// 依次放出每个请求n次 (A1->A2->B1->B2)
 			for (i, request) in requests_to_replay.iter().enumerate() {
 				println!("\n=== Replaying Request {} ===", i + 1);
 				println!("{} {}", request.method, request.url);

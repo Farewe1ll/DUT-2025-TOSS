@@ -167,10 +167,8 @@ pub enum CookieAction {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum ReplayMode {
-    /// 依次放出每个请求n次 (A1->A2->B1->B2)
-    Sequential,
-    /// 按顺序轮流放出请求n次 (A1->B1->A1->B2)
-    Interleaved,
+	Sequential,
+	Interleaved,
 }
 
 pub fn parse_headers(header_strings: Vec<String>) -> HashMap<String, String> {

@@ -67,7 +67,6 @@ impl RequestLogger {
 	pub async fn new(log_file_path: &str) -> Result<Self> {
 		let path = std::path::Path::new(log_file_path);
 
-		// 确保日志目录存在
 		if let Some(parent) = path.parent() {
 			if !parent.exists() {
 				tokio::fs::create_dir_all(parent)
@@ -76,7 +75,6 @@ impl RequestLogger {
 			}
 		}
 
-		// 检查日志文件是否可写
 		let file = OpenOptions::new()
 			.create(true)
 			.append(true)
